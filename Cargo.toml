@@ -1,0 +1,29 @@
+[package]
+name = "arrow-protocol"
+version = "0.3.0"
+authors = ["Ondrej Perutka <ondrej.perutka@angelcam.com>"]
+license = "Apache-2.0"
+readme  = "README.md"
+edition = "2021"
+
+[features]
+default = []
+codec = ["tokio-util/codec"]
+stream = ["futures", "tokio"]
+
+[dependencies]
+bytes = "1"
+macaddr = "1"
+uuid = "1"
+
+[dependencies.futures]
+version = "0.3"
+optional = true
+
+[dependencies.tokio]
+version = "1"
+optional = true
+
+[dependencies.tokio-util]
+version = "0.7"
+optional = true
