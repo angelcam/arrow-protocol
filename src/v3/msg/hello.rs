@@ -25,6 +25,21 @@ impl ClientHelloMessage {
             client_mac,
         }
     }
+
+    /// Get the client ID.
+    pub fn client_id(&self) -> &ClientId {
+        &self.client_id
+    }
+
+    /// Get the client key.
+    pub fn client_key(&self) -> &ClientKey {
+        &self.client_key
+    }
+
+    /// Get the client MAC address.
+    pub fn client_mac(&self) -> &MacAddr {
+        &self.client_mac
+    }
 }
 
 impl Message for ClientHelloMessage {
@@ -94,6 +109,11 @@ impl ServiceRendezvousMessage {
         Self {
             access_token: access_token.into(),
         }
+    }
+
+    /// Get the access token.
+    pub fn access_token(&self) -> &str {
+        &self.access_token
     }
 }
 

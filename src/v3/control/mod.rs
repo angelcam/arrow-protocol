@@ -15,21 +15,22 @@ use serde_lite::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use self::{
-    context::{ConnectionContext, OutgoingNotification},
+    context::{ConnectionContext, OutgoingNotification, OutgoingRequest},
     error::ControlProtocolError,
-    internal::InternalConnection,
+    internal::{InternalConnection, InternalServerHandshake},
     msg::ControlProtocolMessage,
 };
-
-use self::context::OutgoingRequest;
 
 use crate::{
     ClientId, ClientKey, MacAddr,
     v3::{
         error::Error,
-        msg::json::{
-            JsonRpcError, JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest,
-            JsonRpcResponse, JsonRpcValue,
+        msg::{
+            error::ErrorMessage,
+            json::{
+                JsonRpcError, JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest,
+                JsonRpcResponse, JsonRpcValue,
+            },
         },
     },
 };
@@ -80,11 +81,11 @@ impl ControlProtocolConnectionBuilder {
     }
 
     /// Accept a given control protocol connection.
-    pub async fn accept<T>(self, io: T) -> Result<ControlProtocolConnection, Error>
+    pub async fn accept<T>(self, io: T) -> Result<ControlProtocolHandshake, Error>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
     {
-        let connection = InternalConnection::builder()
+        let handshake = InternalConnection::builder()
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .with_max_local_concurrent_requests(self.max_local_concurrent_requests)
             .with_ping_interval(self.ping_interval)
@@ -92,7 +93,12 @@ impl ControlProtocolConnectionBuilder {
             .accept(io)
             .await?;
 
-        Ok(self.build(connection))
+        let res = ControlProtocolHandshake {
+            inner: handshake,
+            max_local_concurrent_requests: self.max_local_concurrent_requests,
+        };
+
+        Ok(res)
     }
 
     /// Connect using the provided IO stream.
@@ -114,12 +120,59 @@ impl ControlProtocolConnectionBuilder {
             .connect(io, client_id, client_key, client_mac)
             .await?;
 
-        Ok(self.build(connection))
+        let res = ControlProtocolConnection::new(connection, self.max_local_concurrent_requests);
+
+        Ok(res)
+    }
+}
+
+/// Control protocol server handshake.
+pub struct ControlProtocolHandshake {
+    inner: InternalServerHandshake,
+    max_local_concurrent_requests: u16,
+}
+
+impl ControlProtocolHandshake {
+    /// Get the client ID.
+    pub fn client_id(&self) -> &ClientId {
+        self.inner.client_id()
     }
 
-    /// Build the service connection.
-    fn build(self, connection: InternalConnection) -> ControlProtocolConnection {
-        let max_local_concurrent_requests = self.max_local_concurrent_requests as usize;
+    /// Get the client key.
+    pub fn client_key(&self) -> &ClientKey {
+        self.inner.client_key()
+    }
+
+    /// Get the client MAC address.
+    pub fn client_mac(&self) -> &MacAddr {
+        self.inner.client_mac()
+    }
+
+    /// Accept the connection.
+    pub async fn accept(self) -> Result<ControlProtocolConnection, Error> {
+        let connection = self.inner.accept().await?;
+
+        let res = ControlProtocolConnection::new(connection, self.max_local_concurrent_requests);
+
+        Ok(res)
+    }
+
+    /// Reject the connection as unauthorized.
+    pub async fn unauthorized(self) -> Result<(), Error> {
+        self.inner.reject(ErrorMessage::Unauthorized).await
+    }
+}
+
+/// Control protocol connection.
+pub struct ControlProtocolConnection {
+    rx: SplitStream<InternalConnection>,
+    context: Arc<Mutex<ConnectionContext>>,
+}
+
+impl ControlProtocolConnection {
+    /// Create a new control protocol connection.
+    fn new(connection: InternalConnection, max_local_concurrent_requests: u16) -> Self {
+        let max_local_concurrent_requests = max_local_concurrent_requests as usize;
 
         let max_remote_concurrent_requests =
             connection.remote_options().max_concurrent_requests() as usize;
@@ -141,20 +194,9 @@ impl ControlProtocolConnectionBuilder {
         //   have been sent.
         tokio::spawn(message_sender.send_all(tx));
 
-        ControlProtocolConnection {
-            rx,
-            context: context.clone(),
-        }
+        Self { rx, context }
     }
-}
 
-/// Control protocol connection.
-pub struct ControlProtocolConnection {
-    rx: SplitStream<InternalConnection>,
-    context: Arc<Mutex<ConnectionContext>>,
-}
-
-impl ControlProtocolConnection {
     /// Get a control protocol connection builder.
     pub const fn builder() -> ControlProtocolConnectionBuilder {
         ControlProtocolConnectionBuilder::new()

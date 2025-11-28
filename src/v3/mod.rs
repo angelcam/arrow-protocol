@@ -8,9 +8,12 @@ mod utils;
 pub use self::{
     control::{
         ControlProtocolConnection, ControlProtocolConnectionBuilder,
-        ControlProtocolConnectionError, ControlProtocolConnectionHandle, ControlProtocolService,
+        ControlProtocolConnectionError, ControlProtocolConnectionHandle, ControlProtocolHandshake,
+        ControlProtocolService,
     },
-    service::{ServiceProtocolConnection, ServiceProtocolConnectionBuilder},
+    service::{
+        ServiceProtocolConnection, ServiceProtocolConnectionBuilder, ServiceProtocolHandshake,
+    },
 };
 
 const PROTOCOL_VERSION: u8 = 3;

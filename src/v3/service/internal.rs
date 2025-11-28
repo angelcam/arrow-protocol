@@ -8,7 +8,7 @@ use futures::{Sink, SinkExt, Stream, StreamExt, ready};
 use tokio::io::{AsyncRead, AsyncWrite};
 
 use crate::v3::{
-    connection::Connection,
+    connection::{Connection, PingPongHandler},
     error::Error,
     msg::{
         DecodeMessage, EncodeMessage, Message, MessageEncoder, MessageKind, error::ErrorMessage,
@@ -16,6 +16,42 @@ use crate::v3::{
     },
     service::{error::ServiceProtocolError, msg::ServiceConnectionMessage},
 };
+
+/// Server handshake.
+pub struct InternalServerHandshake {
+    connection: InternalConnection,
+    ping_pong_handler: PingPongHandler,
+    ping_interval: Duration,
+    pong_timeout: Duration,
+    client_hello: ServiceRendezvousMessage,
+    local_options: ServiceConnectionOptions,
+}
+
+impl InternalServerHandshake {
+    /// Get the access token received from the client.
+    pub fn access_token(&self) -> &str {
+        self.client_hello.access_token()
+    }
+
+    /// Accept the connection.
+    pub async fn accept(mut self) -> Result<InternalConnection, Error> {
+        self.connection
+            .complete_server_handshake(self.local_options)
+            .await?;
+
+        tokio::spawn(
+            self.ping_pong_handler
+                .run(self.ping_interval, self.pong_timeout),
+        );
+
+        Ok(self.connection)
+    }
+
+    /// Reject the connection.
+    pub async fn reject(mut self, err: ErrorMessage) -> Result<(), Error> {
+        self.connection.send_message(err).await.map_err(Error::from)
+    }
+}
 
 /// Internal service connection builder.
 pub struct InternalConnectionBuilder {
@@ -61,7 +97,7 @@ impl InternalConnectionBuilder {
     }
 
     /// Build the connection.
-    pub async fn accept<T>(self, io: T) -> Result<InternalConnection, Error>
+    pub async fn accept<T>(self, io: T) -> Result<InternalServerHandshake, Error>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
     {
@@ -74,17 +110,24 @@ impl InternalConnectionBuilder {
 
         let remote_options = ServiceConnectionOptions::new(65_536, 65_536);
 
-        let mut res = InternalConnection {
+        let mut connection = InternalConnection {
             inner,
             encoder: MessageEncoder::new(),
             remote_options,
         };
 
-        res.server_handshake(local_options).await?;
+        let client_hello = connection.start_server_handshake().await?;
 
-        tokio::spawn(ping_pong_handler.run(self.ping_interval, self.pong_timeout));
+        let handshake = InternalServerHandshake {
+            connection,
+            ping_pong_handler,
+            ping_interval: self.ping_interval,
+            pong_timeout: self.pong_timeout,
+            client_hello,
+            local_options,
+        };
 
-        Ok(res)
+        Ok(handshake)
     }
 
     /// Build the connection.
@@ -172,11 +215,8 @@ impl InternalConnection {
     }
 
     /// Perform the service connection handshake.
-    async fn server_handshake(
-        &mut self,
-        local_options: ServiceConnectionOptions,
-    ) -> Result<(), Error> {
-        let res = self.server_handshake_internal(local_options).await;
+    async fn start_server_handshake(&mut self) -> Result<ServiceRendezvousMessage, Error> {
+        let res = self.read_message(MessageKind::ServiceRendezvous).await;
 
         if let Err(err) = res.as_ref()
             && let Some(msg) = err.to_error_message()
@@ -188,16 +228,26 @@ impl InternalConnection {
     }
 
     /// Perform the service connection handshake.
-    async fn server_handshake_internal(
+    async fn complete_server_handshake(
+        &mut self,
+        local_options: ServiceConnectionOptions,
+    ) -> Result<(), Error> {
+        let res = self.complete_server_handshake_internal(local_options).await;
+
+        if let Err(err) = res.as_ref()
+            && let Some(msg) = err.to_error_message()
+        {
+            let _ = self.send_message(msg).await;
+        }
+
+        res.map_err(Error::from)
+    }
+
+    /// Perform the service connection handshake.
+    async fn complete_server_handshake_internal(
         &mut self,
         local_options: ServiceConnectionOptions,
     ) -> Result<(), ServiceProtocolError> {
-        let _msg = self
-            .read_message::<ServiceRendezvousMessage>(MessageKind::ServiceRendezvous)
-            .await?;
-
-        // TODO: validate the access token
-
         self.send_message(local_options).await?;
 
         self.remote_options = self

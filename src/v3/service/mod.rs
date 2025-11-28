@@ -18,11 +18,13 @@ use tokio::{
 };
 
 use self::{
-    context::ServiceConnectionContext, error::ServiceProtocolError, internal::InternalConnection,
+    context::ServiceConnectionContext,
+    error::ServiceProtocolError,
+    internal::{InternalConnection, InternalServerHandshake},
     msg::ServiceConnectionMessage,
 };
 
-use crate::v3::error::Error;
+use crate::v3::{error::Error, msg::error::ErrorMessage};
 
 /// Service protocol connection builder.
 pub struct ServiceProtocolConnectionBuilder {
@@ -68,11 +70,11 @@ impl ServiceProtocolConnectionBuilder {
     }
 
     /// Build the service connection.
-    pub async fn accept<T>(self, io: T) -> Result<ServiceProtocolConnection, Error>
+    pub async fn accept<T>(self, io: T) -> Result<ServiceProtocolHandshake, Error>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
     {
-        let connection = InternalConnection::builder()
+        let handshake = InternalConnection::builder()
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .with_rx_capacity(self.rx_capacity)
             .with_ping_interval(self.ping_interval)
@@ -80,7 +82,12 @@ impl ServiceProtocolConnectionBuilder {
             .accept(io)
             .await?;
 
-        Ok(self.build(connection))
+        let res = ServiceProtocolHandshake {
+            inner: handshake,
+            rx_capacity: self.rx_capacity,
+        };
+
+        Ok(res)
     }
 
     /// Build the service connection.
@@ -101,18 +108,51 @@ impl ServiceProtocolConnectionBuilder {
             .connect(io, access_token)
             .await?;
 
-        Ok(self.build(connection))
+        Ok(ServiceProtocolConnection::new(connection, self.rx_capacity))
+    }
+}
+
+/// Service protocol server handshake.
+pub struct ServiceProtocolHandshake {
+    inner: InternalServerHandshake,
+    rx_capacity: u32,
+}
+
+impl ServiceProtocolHandshake {
+    /// Get the access token provided by the client.
+    pub fn access_token(&self) -> &str {
+        self.inner.access_token()
     }
 
-    /// Build the service connection.
-    fn build(self, connection: InternalConnection) -> ServiceProtocolConnection {
+    /// Accept the connection.
+    pub async fn accept(self) -> Result<ServiceProtocolConnection, Error> {
+        let connection = self.inner.accept().await?;
+
+        Ok(ServiceProtocolConnection::new(connection, self.rx_capacity))
+    }
+
+    /// Reject the connection as unauthorized.
+    pub async fn unauthorized(self) -> Result<(), Error> {
+        self.inner.reject(ErrorMessage::Unauthorized).await
+    }
+}
+
+/// Service protocol connection.
+pub struct ServiceProtocolConnection {
+    context: Arc<Mutex<ServiceConnectionContext>>,
+    reader: JoinHandle<()>,
+}
+
+impl ServiceProtocolConnection {
+    /// Create a new service protocol connection.
+    fn new(connection: InternalConnection, rx_capacity: u32) -> Self {
         let remote_options = connection.remote_options();
 
         let max_tx_payload_size = remote_options.max_payload_size();
         let tx_capacity = remote_options.max_unacknowledged_data();
 
         let context = ServiceConnectionContext::new(
-            self.rx_capacity as usize,
+            rx_capacity as usize,
             tx_capacity as usize,
             max_tx_payload_size as usize,
         );
@@ -133,17 +173,9 @@ impl ServiceProtocolConnectionBuilder {
 
         tokio::spawn(sender.send_all(tx));
 
-        ServiceProtocolConnection { context, reader }
+        Self { context, reader }
     }
-}
 
-/// Service protocol connection.
-pub struct ServiceProtocolConnection {
-    context: Arc<Mutex<ServiceConnectionContext>>,
-    reader: JoinHandle<()>,
-}
-
-impl ServiceProtocolConnection {
     /// Get a service connection builder.
     pub fn builder() -> ServiceProtocolConnectionBuilder {
         ServiceProtocolConnectionBuilder::new()
