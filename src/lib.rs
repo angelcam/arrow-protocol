@@ -1,24 +1,12 @@
-mod utils;
-
-pub mod msg;
+pub mod v2;
+pub mod v3;
 
 use uuid::Uuid;
 
 pub use macaddr::MacAddr6 as MacAddr;
 
-pub use self::{
-    msg::{ArrowMessage, ArrowMessageBody, ControlMessage, ControlMessagePayload},
-    utils::{Decode, DecodeWithContext, Encode},
-};
-
-#[cfg(feature = "codec")]
-pub use self::msg::ArrowProtocolCodec;
-
-#[cfg(feature = "stream")]
-pub use self::msg::ArrowMessageStream;
-
 /// Current version of the Arrow protocol.
-pub const ARROW_PROTOCOL_VERSION: u8 = 2;
+pub const ARROW_PROTOCOL_VERSION: u8 = 3;
 
 /// Check if a given version of the protocol is supported.
 #[inline]

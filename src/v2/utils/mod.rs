@@ -6,8 +6,8 @@ use std::{
 };
 
 use bytes::{
-    buf::{Buf, BufMut, Take},
     Bytes,
+    buf::{Buf, BufMut, Take},
 };
 
 /// Trait for types that can be represented as a slice of bytes.

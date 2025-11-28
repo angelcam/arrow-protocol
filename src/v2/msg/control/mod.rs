@@ -27,12 +27,14 @@ pub use self::{
 };
 
 use crate::{
-    msg::control::scan_report::HostRecord,
-    utils::{
-        net::UnsupportedIpAddrVersion, AsBytes, Decode, DecodeWithContext, Encode, FromBytes,
-        UnexpectedEof,
-    },
     ClientId, ClientKey, MacAddr,
+    v2::{
+        msg::control::scan_report::HostRecord,
+        utils::{
+            AsBytes, Decode, DecodeWithContext, Encode, FromBytes, UnexpectedEof,
+            net::UnsupportedIpAddrVersion,
+        },
+    },
 };
 
 /// Decoding error.
@@ -401,7 +403,7 @@ impl Encode for ControlMessage {
 }
 
 /// Control Protocol message header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessageHeader {
     message_id: u16,

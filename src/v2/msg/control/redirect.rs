@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut};
 
-use crate::{
+use crate::v2::{
     msg::control::DecodingError,
     utils::{Decode, Encode},
 };

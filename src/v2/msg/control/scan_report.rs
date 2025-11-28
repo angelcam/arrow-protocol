@@ -5,9 +5,11 @@ use std::net::IpAddr;
 use bytes::{Buf, BufMut};
 
 use crate::{
-    msg::control::{svc_table::ServiceTable, DecodingError},
-    utils::{net::IpAddrExt, AsBytes, Decode, Encode, FromBytes},
     MacAddr,
+    v2::{
+        msg::control::{DecodingError, svc_table::ServiceTable},
+        utils::{AsBytes, Decode, Encode, FromBytes, net::IpAddrExt},
+    },
 };
 
 /// Scan report message payload.
@@ -111,7 +113,7 @@ impl Encode for ScanReportMessage {
 }
 
 /// Scan report header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessageHeader {
     request_id: u16,
@@ -244,7 +246,7 @@ impl Encode for HostRecord {
 }
 
 /// Host record header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawHostRecordHeader {
     flags: u8,

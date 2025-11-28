@@ -4,7 +4,7 @@ use std::{
     net::{IpAddr, Ipv4Addr, Ipv6Addr},
 };
 
-///
+/// Unsupported IP address version.
 #[derive(Debug, Copy, Clone)]
 pub struct UnsupportedIpAddrVersion;
 

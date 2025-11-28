@@ -1,30 +1,34 @@
 use bytes::{Buf, BufMut};
 
-use crate::{
+use crate::v2::{
     msg::control::DecodingError,
     utils::{AsBytes, Decode, Encode, FromBytes},
 };
 
-/// HUP message payload.
+/// CONNECT message payload.
 #[derive(Copy, Clone)]
-pub struct HupMessage {
+pub struct ConnectMessage {
+    service_id: u16,
     session_id: u32,
-    error_code: u32,
 }
 
-impl HupMessage {
-    pub const NO_ERROR: u32 = 0;
-    pub const CONNECTION_ERROR: u32 = 0x03;
-    pub const INTERNAL_SERVER_ERROR: u32 = 0xffffffff;
-
-    /// Create a new HUP message payload.
-    pub fn new(session_id: u32, error_code: u32) -> Self {
+impl ConnectMessage {
+    /// Create a new CONNECT message payload.
+    #[inline]
+    pub const fn new(service_id: u16, session_id: u32) -> Self {
+        assert!(service_id != 0);
         assert!((session_id >> 24) == 0);
 
         Self {
+            service_id,
             session_id,
-            error_code,
         }
+    }
+
+    /// Get the service ID.
+    #[inline]
+    pub fn service_id(&self) -> u16 {
+        self.service_id
     }
 
     /// Get the session ID.
@@ -32,15 +36,9 @@ impl HupMessage {
     pub fn session_id(&self) -> u32 {
         self.session_id
     }
-
-    /// Get the error code.
-    #[inline]
-    pub fn error_code(&self) -> u32 {
-        self.error_code
-    }
 }
 
-impl Decode for HupMessage {
+impl Decode for ConnectMessage {
     type Error = DecodingError;
 
     fn decode<B>(data: &mut B) -> Result<Self, Self::Error>
@@ -50,8 +48,8 @@ impl Decode for HupMessage {
         let raw = RawMessage::from_bytes(data.as_ref())?;
 
         let res = Self {
+            service_id: u16::from_be(raw.service_id),
             session_id: u32::from_be(raw.session_id) & 0x00ffffff,
-            error_code: u32::from_be(raw.error_code),
         };
 
         data.advance(raw.size());
@@ -60,14 +58,14 @@ impl Decode for HupMessage {
     }
 }
 
-impl Encode for HupMessage {
+impl Encode for ConnectMessage {
     fn encode<B>(&self, buf: &mut B)
     where
         B: BufMut,
     {
         let raw = RawMessage {
+            service_id: self.service_id.to_be(),
             session_id: self.session_id.to_be(),
-            error_code: self.error_code.to_be(),
         };
 
         buf.put_slice(raw.as_bytes());
@@ -79,12 +77,12 @@ impl Encode for HupMessage {
     }
 }
 
-/// Raw HUP message.
-#[repr(packed)]
+/// Raw CONNECT message.
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessage {
+    service_id: u16,
     session_id: u32,
-    error_code: u32,
 }
 
 impl AsBytes for RawMessage {}

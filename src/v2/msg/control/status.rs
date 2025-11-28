@@ -1,6 +1,6 @@
 use bytes::{Buf, BufMut};
 
-use crate::{
+use crate::v2::{
     msg::control::DecodingError,
     utils::{AsBytes, Decode, Encode, FromBytes},
 };
@@ -87,7 +87,7 @@ impl Encode for StatusMessage {
 }
 
 /// Status message header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessage {
     request_id: u16,

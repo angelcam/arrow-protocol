@@ -4,26 +4,37 @@ version = "0.3.1"
 authors = ["Ondrej Perutka <ondrej.perutka@angelcam.com>"]
 license = "Apache-2.0"
 readme  = "README.md"
-edition = "2021"
-
-[features]
-default = []
-codec = ["tokio-util/codec"]
-stream = ["futures", "tokio"]
+edition = "2024"
 
 [dependencies]
 bytes = "1"
+futures = "0.3"
 macaddr = "1"
+pin-project-lite = "0.2"
+serde_json = "1"
+trait-variant = "0.1"
 uuid = "1"
 
-[dependencies.futures]
-version = "0.3"
-optional = true
+[dependencies.serde-lite]
+version = "0.5"
+features = ["derive"]
 
 [dependencies.tokio]
 version = "1"
-optional = true
+features = ["rt", "time"]
 
 [dependencies.tokio-util]
 version = "0.7"
-optional = true
+features = ["codec"]
+
+[dev-dependencies.serde-lite]
+version = "0.5"
+features = ["derive", "preserve-order"]
+
+[dev-dependencies.tokio]
+version = "1"
+features = ["full"]
+
+[dev-dependencies.tokio-util]
+version = "0.7"
+features = ["codec", "io-util"]

@@ -1,5 +1,5 @@
-use crate::{
-    msg::control::{svc_table::ServiceTable, DecodingError},
+use crate::v2::{
+    msg::control::{DecodingError, svc_table::ServiceTable},
     utils::{Decode, Encode},
 };
 

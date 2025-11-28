@@ -10,11 +10,11 @@ use std::{
 };
 
 use bytes::{Buf, BytesMut};
-use futures::{ready, Sink, Stream};
+use futures::{Sink, Stream, ready};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-use crate::{
-    msg::{control::InvalidControlMessage, ArrowMessage, InvalidMessage},
+use crate::v2::{
+    msg::{ArrowMessage, InvalidMessage, control::InvalidControlMessage},
     utils::{Decode, Encode},
 };
 
@@ -136,10 +136,10 @@ where
                     }
                 }
                 Err(InvalidMessage::UnsupportedProtocolVersion(v)) => {
-                    return Poll::Ready(Some(Err(Error::UnsupportedProtocolVersion(v))))
+                    return Poll::Ready(Some(Err(Error::UnsupportedProtocolVersion(v))));
                 }
                 Err(InvalidMessage::InvalidControlMessage(err)) => {
-                    return Poll::Ready(Some(Err(Error::InvalidControlMessage(err))))
+                    return Poll::Ready(Some(Err(Error::InvalidControlMessage(err))));
                 }
             }
         }

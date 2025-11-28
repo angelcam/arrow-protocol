@@ -3,7 +3,7 @@ use std::io;
 use bytes::BytesMut;
 use tokio_util::codec::{Decoder, Encoder};
 
-use crate::{ArrowMessage, Decode, Encode};
+use crate::v2::{ArrowMessage, Decode, Encode};
 
 /// Arrow Protocol codec.
 pub struct ArrowProtocolCodec(());

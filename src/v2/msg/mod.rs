@@ -1,12 +1,9 @@
 //! Arrow Protocol messages.
 
-#[cfg(feature = "codec")]
 mod codec;
 
-#[cfg(feature = "stream")]
-pub mod stream;
-
 pub mod control;
+pub mod stream;
 
 use std::{
     error::Error,
@@ -18,17 +15,15 @@ use bytes::{Buf, BufMut, Bytes};
 use self::control::InvalidControlMessage;
 
 use crate::{
-    utils::{AsBytes, BufExt, Decode, DecodeWithContext, Encode, FromBytes, UnexpectedEof},
     ARROW_PROTOCOL_VERSION,
+    v2::utils::{AsBytes, BufExt, Decode, DecodeWithContext, Encode, FromBytes, UnexpectedEof},
 };
 
-pub use self::control::{ControlMessage, ControlMessagePayload};
-
-#[cfg(feature = "codec")]
-pub use self::codec::ArrowProtocolCodec;
-
-#[cfg(feature = "stream")]
-pub use self::stream::ArrowMessageStream;
+pub use self::{
+    codec::ArrowProtocolCodec,
+    control::{ControlMessage, ControlMessagePayload},
+    stream::ArrowMessageStream,
+};
 
 /// Invalid message.
 #[derive(Debug, Clone)]
@@ -303,7 +298,7 @@ impl From<ControlMessage> for ArrowMessageBody {
 }
 
 /// Arrow Message header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessageHeader {
     version: u8,

@@ -1,23 +1,30 @@
 use bytes::{Buf, BufMut};
 
-use crate::{
+use crate::v2::{
     msg::control::DecodingError,
     utils::{AsBytes, Decode, Encode, FromBytes},
 };
 
-/// DATA_ACK message payload.
+/// HUP message payload.
 #[derive(Copy, Clone)]
-pub struct DataAckMessage {
+pub struct HupMessage {
     session_id: u32,
-    length: u32,
+    error_code: u32,
 }
 
-impl DataAckMessage {
-    /// Create a new DATA_ACK message payload.
-    pub fn new(session_id: u32, length: u32) -> Self {
+impl HupMessage {
+    pub const NO_ERROR: u32 = 0;
+    pub const CONNECTION_ERROR: u32 = 0x03;
+    pub const INTERNAL_SERVER_ERROR: u32 = 0xffffffff;
+
+    /// Create a new HUP message payload.
+    pub fn new(session_id: u32, error_code: u32) -> Self {
         assert!((session_id >> 24) == 0);
 
-        Self { session_id, length }
+        Self {
+            session_id,
+            error_code,
+        }
     }
 
     /// Get the session ID.
@@ -26,14 +33,14 @@ impl DataAckMessage {
         self.session_id
     }
 
-    /// Get the ACK length.
+    /// Get the error code.
     #[inline]
-    pub fn length(&self) -> u32 {
-        self.length
+    pub fn error_code(&self) -> u32 {
+        self.error_code
     }
 }
 
-impl Decode for DataAckMessage {
+impl Decode for HupMessage {
     type Error = DecodingError;
 
     fn decode<B>(data: &mut B) -> Result<Self, Self::Error>
@@ -44,7 +51,7 @@ impl Decode for DataAckMessage {
 
         let res = Self {
             session_id: u32::from_be(raw.session_id) & 0x00ffffff,
-            length: u32::from_be(raw.length),
+            error_code: u32::from_be(raw.error_code),
         };
 
         data.advance(raw.size());
@@ -53,14 +60,14 @@ impl Decode for DataAckMessage {
     }
 }
 
-impl Encode for DataAckMessage {
+impl Encode for HupMessage {
     fn encode<B>(&self, buf: &mut B)
     where
         B: BufMut,
     {
         let raw = RawMessage {
             session_id: self.session_id.to_be(),
-            length: self.length.to_be(),
+            error_code: self.error_code.to_be(),
         };
 
         buf.put_slice(raw.as_bytes());
@@ -72,12 +79,12 @@ impl Encode for DataAckMessage {
     }
 }
 
-/// Raw DATA_ACK message.
-#[repr(packed)]
+/// Raw HUP message.
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessage {
     session_id: u32,
-    length: u32,
+    error_code: u32,
 }
 
 impl AsBytes for RawMessage {}

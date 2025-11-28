@@ -11,9 +11,11 @@ use std::{
 use bytes::{Buf, BufMut};
 
 use crate::{
-    msg::control::DecodingError,
-    utils::{net::IpAddrExt, AsBytes, Decode, Encode, FromBytes},
     MacAddr,
+    v2::{
+        msg::control::DecodingError,
+        utils::{AsBytes, Decode, Encode, FromBytes, net::IpAddrExt},
+    },
 };
 
 /// Unknown service type.
@@ -220,7 +222,7 @@ impl Encode for ServiceRecord {
 }
 
 /// Service record header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawRecordHeader {
     service_id: u16,
@@ -331,7 +333,7 @@ where
 mod tests {
     use super::ServiceRecord;
 
-    use crate::utils::Decode;
+    use crate::v2::utils::Decode;
 
     #[test]
     fn test_null_record_decoding() {

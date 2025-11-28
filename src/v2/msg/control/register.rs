@@ -1,9 +1,11 @@
 use bytes::{Buf, BufMut};
 
 use crate::{
-    msg::control::{svc_table::ServiceTable, DecodingError},
-    utils::{AsBytes, Decode, DecodeWithContext, Encode, FromBytes},
     ClientId, ClientKey, MacAddr,
+    v2::{
+        msg::control::{DecodingError, svc_table::ServiceTable},
+        utils::{AsBytes, Decode, DecodeWithContext, Encode, FromBytes},
+    },
 };
 
 /// Register message payload.
@@ -298,7 +300,7 @@ enum MessageVersion {
 }
 
 /// Register message header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessageHeader {
     uuid: [u8; 16],
@@ -310,7 +312,7 @@ impl AsBytes for RawMessageHeader {}
 impl FromBytes for RawMessageHeader {}
 
 /// Register message header.
-#[repr(packed)]
+#[repr(C, packed)]
 #[derive(Copy, Clone)]
 struct RawMessageHeaderV2 {
     uuid: [u8; 16],
