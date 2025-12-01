@@ -12,7 +12,7 @@ use crate::v3::{
     error::Error,
     msg::{
         DecodeMessage, EncodeMessage, Message, MessageEncoder, MessageKind, error::ErrorMessage,
-        hello::ServiceRendezvousMessage, options::ServiceConnectionOptions,
+        hello::ServiceProtocolHelloMessage, options::ServiceProtocolOptions,
     },
     service::{error::ServiceProtocolError, msg::ServiceConnectionMessage},
 };
@@ -23,11 +23,38 @@ pub struct InternalServerHandshake {
     ping_pong_handler: PingPongHandler,
     ping_interval: Duration,
     pong_timeout: Duration,
-    client_hello: ServiceRendezvousMessage,
-    local_options: ServiceConnectionOptions,
+    client_hello: ServiceProtocolHelloMessage,
+    local_options: ServiceProtocolOptions,
 }
 
 impl InternalServerHandshake {
+    /// Create a new server handshake.
+    pub(super) fn new(
+        connection: Connection,
+        ping_pong_handler: PingPongHandler,
+        ping_interval: Duration,
+        pong_timeout: Duration,
+        client_hello: ServiceProtocolHelloMessage,
+        local_options: ServiceProtocolOptions,
+    ) -> Self {
+        let remote_options = ServiceProtocolOptions::new(65_536, 65_536);
+
+        let connection = InternalConnection {
+            inner: connection,
+            encoder: MessageEncoder::new(),
+            remote_options,
+        };
+
+        Self {
+            connection,
+            ping_pong_handler,
+            ping_interval,
+            pong_timeout,
+            client_hello,
+            local_options,
+        }
+    }
+
     /// Get the access token received from the client.
     pub fn access_token(&self) -> &str {
         self.client_hello.access_token()
@@ -105,10 +132,9 @@ impl InternalConnectionBuilder {
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .build(io);
 
-        let local_options =
-            ServiceConnectionOptions::new(self.max_rx_payload_size, self.rx_capacity);
+        let local_options = ServiceProtocolOptions::new(self.max_rx_payload_size, self.rx_capacity);
 
-        let remote_options = ServiceConnectionOptions::new(65_536, 65_536);
+        let remote_options = ServiceProtocolOptions::new(65_536, 65_536);
 
         let mut connection = InternalConnection {
             inner,
@@ -142,10 +168,9 @@ impl InternalConnectionBuilder {
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .build(io);
 
-        let local_options =
-            ServiceConnectionOptions::new(self.max_rx_payload_size, self.rx_capacity);
+        let local_options = ServiceProtocolOptions::new(self.max_rx_payload_size, self.rx_capacity);
 
-        let remote_options = ServiceConnectionOptions::new(65_536, 65_536);
+        let remote_options = ServiceProtocolOptions::new(65_536, 65_536);
 
         let mut res = InternalConnection {
             inner,
@@ -165,7 +190,7 @@ impl InternalConnectionBuilder {
 pub struct InternalConnection {
     inner: Connection,
     encoder: MessageEncoder,
-    remote_options: ServiceConnectionOptions,
+    remote_options: ServiceProtocolOptions,
 }
 
 impl InternalConnection {
@@ -175,7 +200,7 @@ impl InternalConnection {
     }
 
     /// Get the remote peer options.
-    pub fn remote_options(&self) -> &ServiceConnectionOptions {
+    pub fn remote_options(&self) -> &ServiceProtocolOptions {
         &self.remote_options
     }
 
@@ -183,7 +208,7 @@ impl InternalConnection {
     async fn client_handshake(
         &mut self,
         access_token: String,
-        local_options: ServiceConnectionOptions,
+        local_options: ServiceProtocolOptions,
     ) -> Result<(), Error> {
         let res = self
             .client_handshake_internal(access_token, local_options)
@@ -202,21 +227,21 @@ impl InternalConnection {
     async fn client_handshake_internal(
         &mut self,
         access_token: String,
-        local_options: ServiceConnectionOptions,
+        local_options: ServiceProtocolOptions,
     ) -> Result<(), ServiceProtocolError> {
-        self.send_message(ServiceRendezvousMessage::new(access_token))
+        self.send_message(ServiceProtocolHelloMessage::new(access_token))
             .await?;
 
         self.remote_options = self
-            .read_message(MessageKind::ServiceConnectionOptions)
+            .read_message(MessageKind::ServiceProtocolOptions)
             .await?;
 
         self.send_message(local_options).await
     }
 
     /// Perform the service connection handshake.
-    async fn start_server_handshake(&mut self) -> Result<ServiceRendezvousMessage, Error> {
-        let res = self.read_message(MessageKind::ServiceRendezvous).await;
+    async fn start_server_handshake(&mut self) -> Result<ServiceProtocolHelloMessage, Error> {
+        let res = self.read_message(MessageKind::ServiceProtocolHello).await;
 
         if let Err(err) = res.as_ref()
             && let Some(msg) = err.to_error_message()
@@ -230,7 +255,7 @@ impl InternalConnection {
     /// Perform the service connection handshake.
     async fn complete_server_handshake(
         &mut self,
-        local_options: ServiceConnectionOptions,
+        local_options: ServiceProtocolOptions,
     ) -> Result<(), Error> {
         let res = self.complete_server_handshake_internal(local_options).await;
 
@@ -246,12 +271,12 @@ impl InternalConnection {
     /// Perform the service connection handshake.
     async fn complete_server_handshake_internal(
         &mut self,
-        local_options: ServiceConnectionOptions,
+        local_options: ServiceProtocolOptions,
     ) -> Result<(), ServiceProtocolError> {
         self.send_message(local_options).await?;
 
         self.remote_options = self
-            .read_message(MessageKind::ServiceConnectionOptions)
+            .read_message(MessageKind::ServiceProtocolOptions)
             .await?;
 
         Ok(())

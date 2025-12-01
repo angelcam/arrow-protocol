@@ -24,13 +24,16 @@ use self::{
 use crate::{
     ClientId, ClientKey, MacAddr,
     v3::{
+        connection::{Connection, PingPongHandler},
         error::Error,
         msg::{
             error::ErrorMessage,
+            hello::ControlProtocolHelloMessage,
             json::{
                 JsonRpcError, JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest,
                 JsonRpcResponse, JsonRpcValue,
             },
+            options::ControlProtocolOptions,
         },
     },
 };
@@ -57,25 +60,25 @@ impl ControlProtocolConnectionBuilder {
     }
 
     /// Set the maximum payload size for incoming messages.
-    pub fn max_rx_payload_size(mut self, size: u32) -> Self {
+    pub fn with_max_rx_payload_size(mut self, size: u32) -> Self {
         self.max_rx_payload_size = size;
         self
     }
 
     /// Set the maximum number of concurrent incoming requests.
-    pub fn max_local_concurrent_requests(mut self, count: u16) -> Self {
+    pub fn with_max_local_concurrent_requests(mut self, count: u16) -> Self {
         self.max_local_concurrent_requests = count;
         self
     }
 
     /// Set the ping interval.
-    pub fn ping_interval(mut self, interval: Duration) -> Self {
+    pub fn with_ping_interval(mut self, interval: Duration) -> Self {
         self.ping_interval = interval;
         self
     }
 
     /// Set the pong timeout.
-    pub fn pong_timeout(mut self, timeout: Duration) -> Self {
+    pub fn with_pong_timeout(mut self, timeout: Duration) -> Self {
         self.pong_timeout = timeout;
         self
     }
@@ -133,6 +136,32 @@ pub struct ControlProtocolHandshake {
 }
 
 impl ControlProtocolHandshake {
+    /// Create a new control protocol server handshake.
+    pub(super) fn new(
+        connection: Connection,
+        ping_pong_handler: PingPongHandler,
+        ping_interval: Duration,
+        pong_timeout: Duration,
+        client_hello: ControlProtocolHelloMessage,
+        local_options: ControlProtocolOptions,
+    ) -> Self {
+        let max_local_concurrent_requests = local_options.max_concurrent_requests();
+
+        let inner = InternalServerHandshake::new(
+            connection,
+            ping_pong_handler,
+            ping_interval,
+            pong_timeout,
+            client_hello,
+            local_options,
+        );
+
+        Self {
+            inner,
+            max_local_concurrent_requests,
+        }
+    }
+
     /// Get the client ID.
     pub fn client_id(&self) -> &ClientId {
         self.inner.client_id()
@@ -563,10 +592,10 @@ mod tests {
         let client_mac = MacAddr::from([0xcc; 6]);
 
         let target = ControlProtocolConnection::builder()
-            .max_rx_payload_size(1024)
-            .max_local_concurrent_requests(4)
-            .ping_interval(Duration::from_secs(20))
-            .pong_timeout(Duration::from_secs(10))
+            .with_max_rx_payload_size(1024)
+            .with_max_local_concurrent_requests(4)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
             .connect(client_id, client_key, client_mac, io)
             .await
             .unwrap()
@@ -607,10 +636,10 @@ mod tests {
         let client_mac = MacAddr::from([0xcc; 6]);
 
         let err = ControlProtocolConnection::builder()
-            .max_rx_payload_size(1024)
-            .max_local_concurrent_requests(4)
-            .ping_interval(Duration::from_secs(20))
-            .pong_timeout(Duration::from_secs(10))
+            .with_max_rx_payload_size(1024)
+            .with_max_local_concurrent_requests(4)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
             .connect(client_id, client_key, client_mac, io)
             .await
             .unwrap()
@@ -676,10 +705,10 @@ mod tests {
         let client_mac = MacAddr::from([0xcc; 6]);
 
         let err = ControlProtocolConnection::builder()
-            .max_rx_payload_size(1024)
-            .max_local_concurrent_requests(2)
-            .ping_interval(Duration::from_secs(20))
-            .pong_timeout(Duration::from_secs(10))
+            .with_max_rx_payload_size(1024)
+            .with_max_local_concurrent_requests(2)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
             .connect(client_id, client_key, client_mac, io)
             .await
             .unwrap()
@@ -737,10 +766,10 @@ mod tests {
         let client_mac = MacAddr::from([0xcc; 6]);
 
         let connection = ControlProtocolConnection::builder()
-            .max_rx_payload_size(1024)
-            .max_local_concurrent_requests(2)
-            .ping_interval(Duration::from_secs(20))
-            .pong_timeout(Duration::from_secs(10))
+            .with_max_rx_payload_size(1024)
+            .with_max_local_concurrent_requests(2)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
             .connect(client_id, client_key, client_mac, io)
             .await
             .unwrap();

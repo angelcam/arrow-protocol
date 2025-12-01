@@ -35,12 +35,12 @@ impl std::error::Error for UnknownMessageKind {}
 #[repr(u8)]
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
 pub enum MessageKind {
-    ClientHello = 0x00,
-    ServiceRendezvous = 0x01,
+    ControlProtocolHello = 0x00,
+    ServiceProtocolHello = 0x01,
     Error = 0x02,
     Redirect = 0x03,
-    ControlConnectionOptions = 0x04,
-    ServiceConnectionOptions = 0x05,
+    ControlProtocolOptions = 0x04,
+    ServiceProtocolOptions = 0x05,
     Ping = 0x06,
     Pong = 0x07,
     JsonRpcRequest = 0x10,
@@ -55,12 +55,12 @@ impl TryFrom<u8> for MessageKind {
 
     fn try_from(value: u8) -> Result<Self, <Self as TryFrom<u8>>::Error> {
         match value {
-            0x00 => Ok(MessageKind::ClientHello),
-            0x01 => Ok(MessageKind::ServiceRendezvous),
+            0x00 => Ok(MessageKind::ControlProtocolHello),
+            0x01 => Ok(MessageKind::ServiceProtocolHello),
             0x02 => Ok(MessageKind::Error),
             0x03 => Ok(MessageKind::Redirect),
-            0x04 => Ok(MessageKind::ControlConnectionOptions),
-            0x05 => Ok(MessageKind::ServiceConnectionOptions),
+            0x04 => Ok(MessageKind::ControlProtocolOptions),
+            0x05 => Ok(MessageKind::ServiceProtocolOptions),
             0x06 => Ok(MessageKind::Ping),
             0x07 => Ok(MessageKind::Pong),
             0x10 => Ok(MessageKind::JsonRpcRequest),

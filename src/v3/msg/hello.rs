@@ -9,15 +9,15 @@ use crate::{
     },
 };
 
-/// Client Hello message.
-pub struct ClientHelloMessage {
+/// Control protocol hello message.
+pub struct ControlProtocolHelloMessage {
     client_id: ClientId,
     client_key: ClientKey,
     client_mac: MacAddr,
 }
 
-impl ClientHelloMessage {
-    /// Create a new Client Hello message.
+impl ControlProtocolHelloMessage {
+    /// Create a new hello message.
     pub const fn new(client_id: ClientId, client_key: ClientKey, client_mac: MacAddr) -> Self {
         Self {
             client_id,
@@ -42,21 +42,23 @@ impl ClientHelloMessage {
     }
 }
 
-impl Message for ClientHelloMessage {
+impl Message for ControlProtocolHelloMessage {
     fn kind(&self) -> MessageKind {
-        MessageKind::ClientHello
+        MessageKind::ControlProtocolHello
     }
 }
 
-impl DecodeMessage for ClientHelloMessage {
+impl DecodeMessage for ControlProtocolHelloMessage {
     fn decode(buf: &mut Bytes) -> Result<Self, Error> {
-        let size = std::mem::size_of::<RawClientHelloMessage>();
+        let size = std::mem::size_of::<RawControlProtocolHelloMessage>();
 
         if buf.len() < size {
-            return Err(Error::from_static_msg("Hello message too short"));
+            return Err(Error::from_static_msg(
+                "control protocol hello message too short",
+            ));
         }
 
-        let raw = RawClientHelloMessage::from_bytes(buf);
+        let raw = RawControlProtocolHelloMessage::from_bytes(buf);
 
         let res = Self {
             client_id: ClientId::from_bytes(raw.client_id),
@@ -70,9 +72,9 @@ impl DecodeMessage for ClientHelloMessage {
     }
 }
 
-impl EncodeMessage for ClientHelloMessage {
+impl EncodeMessage for ControlProtocolHelloMessage {
     fn encode(&self, buf: &mut BytesMut) -> Bytes {
-        let msg = RawClientHelloMessage {
+        let msg = RawControlProtocolHelloMessage {
             client_id: self.client_id.into_bytes(),
             client_key: self.client_key,
             client_mac: self.client_mac.into_array(),
@@ -86,22 +88,22 @@ impl EncodeMessage for ClientHelloMessage {
     }
 }
 
-/// Raw representation of Client Hello message.
+/// Raw representation of the control protocol hello message.
 #[repr(packed, C)]
 #[derive(Copy, Clone)]
-struct RawClientHelloMessage {
+struct RawControlProtocolHelloMessage {
     client_id: [u8; 16],
     client_key: [u8; 16],
     client_mac: [u8; 6],
 }
 
-/// Service Rendezvous message.
-pub struct ServiceRendezvousMessage {
+/// Service protocol hello message.
+pub struct ServiceProtocolHelloMessage {
     access_token: String,
 }
 
-impl ServiceRendezvousMessage {
-    /// Create a new Service Rendezvous message.
+impl ServiceProtocolHelloMessage {
+    /// Create a new hello message.
     pub fn new<T>(access_token: T) -> Self
     where
         T: Into<String>,
@@ -117,18 +119,18 @@ impl ServiceRendezvousMessage {
     }
 }
 
-impl Message for ServiceRendezvousMessage {
+impl Message for ServiceProtocolHelloMessage {
     fn kind(&self) -> MessageKind {
-        MessageKind::ServiceRendezvous
+        MessageKind::ServiceProtocolHello
     }
 }
 
-impl DecodeMessage for ServiceRendezvousMessage {
+impl DecodeMessage for ServiceProtocolHelloMessage {
     fn decode(buf: &mut Bytes) -> Result<Self, Error> {
         let null_pos = buf
             .iter()
             .position(|&b| b == 0)
-            .ok_or_else(|| Error::from_static_msg("invalid service rendezvous message"))?;
+            .ok_or_else(|| Error::from_static_msg("invalid service protocol hello message"))?;
 
         let access_token = str::from_utf8(&buf.split_to(null_pos))
             .map_err(|_| Error::from_static_msg("access token is not UTF-8 encoded"))?
@@ -140,7 +142,7 @@ impl DecodeMessage for ServiceRendezvousMessage {
     }
 }
 
-impl EncodeMessage for ServiceRendezvousMessage {
+impl EncodeMessage for ServiceProtocolHelloMessage {
     fn encode(&self, buf: &mut BytesMut) -> Bytes {
         buf.reserve(1 + self.access_token.len());
 

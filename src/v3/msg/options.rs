@@ -7,12 +7,12 @@ use crate::v3::{
 };
 
 /// Control protocol connection options.
-pub struct ControlConnectionOptions {
+pub struct ControlProtocolOptions {
     max_payload_size: u32,
     max_concurrent_requests: u16,
 }
 
-impl ControlConnectionOptions {
+impl ControlProtocolOptions {
     /// Create new control protocol connection options.
     pub const fn new(max_payload_size: u32, max_concurrent_requests: u16) -> Self {
         Self {
@@ -32,23 +32,23 @@ impl ControlConnectionOptions {
     }
 }
 
-impl Message for ControlConnectionOptions {
+impl Message for ControlProtocolOptions {
     fn kind(&self) -> MessageKind {
-        MessageKind::ControlConnectionOptions
+        MessageKind::ControlProtocolOptions
     }
 }
 
-impl DecodeMessage for ControlConnectionOptions {
+impl DecodeMessage for ControlProtocolOptions {
     fn decode(buf: &mut Bytes) -> Result<Self, Error> {
-        let size = std::mem::size_of::<RawControlConnectionOptions>();
+        let size = std::mem::size_of::<RawControlProtocolOptions>();
 
         if buf.len() < size {
             return Err(Error::from_static_msg(
-                "control connection options message too short",
+                "control protocol options message too short",
             ));
         }
 
-        let raw = RawControlConnectionOptions::from_bytes(buf);
+        let raw = RawControlProtocolOptions::from_bytes(buf);
 
         let res = Self {
             max_payload_size: u32::from_be(raw.max_payload_size),
@@ -61,9 +61,9 @@ impl DecodeMessage for ControlConnectionOptions {
     }
 }
 
-impl EncodeMessage for ControlConnectionOptions {
+impl EncodeMessage for ControlProtocolOptions {
     fn encode(&self, buf: &mut BytesMut) -> Bytes {
-        let msg = RawControlConnectionOptions {
+        let msg = RawControlProtocolOptions {
             max_payload_size: self.max_payload_size.to_be(),
             max_concurrent_requests: self.max_concurrent_requests.to_be(),
         };
@@ -79,19 +79,19 @@ impl EncodeMessage for ControlConnectionOptions {
 /// Raw representation of control protocol connection options.
 #[repr(packed, C)]
 #[derive(Copy, Clone)]
-struct RawControlConnectionOptions {
+struct RawControlProtocolOptions {
     max_payload_size: u32,
     max_concurrent_requests: u16,
 }
 
-/// Service connection options.
-pub struct ServiceConnectionOptions {
+/// Service protocol connection options.
+pub struct ServiceProtocolOptions {
     max_payload_size: u32,
     max_unacknowledged_data: u32,
 }
 
-impl ServiceConnectionOptions {
-    /// Create new service connection options.
+impl ServiceProtocolOptions {
+    /// Create new service protocol connection options.
     pub const fn new(max_payload_size: u32, max_unacknowledged_data: u32) -> Self {
         Self {
             max_payload_size,
@@ -110,23 +110,23 @@ impl ServiceConnectionOptions {
     }
 }
 
-impl Message for ServiceConnectionOptions {
+impl Message for ServiceProtocolOptions {
     fn kind(&self) -> MessageKind {
-        MessageKind::ServiceConnectionOptions
+        MessageKind::ServiceProtocolOptions
     }
 }
 
-impl DecodeMessage for ServiceConnectionOptions {
+impl DecodeMessage for ServiceProtocolOptions {
     fn decode(buf: &mut Bytes) -> Result<Self, Error> {
-        let size = std::mem::size_of::<RawServiceConnectionOptions>();
+        let size = std::mem::size_of::<RawServiceProtocolOptions>();
 
         if buf.len() < size {
             return Err(Error::from_static_msg(
-                "service connection options message too short",
+                "service protocol options message too short",
             ));
         }
 
-        let raw = RawServiceConnectionOptions::from_bytes(buf);
+        let raw = RawServiceProtocolOptions::from_bytes(buf);
 
         let res = Self {
             max_payload_size: u32::from_be(raw.max_payload_size),
@@ -139,9 +139,9 @@ impl DecodeMessage for ServiceConnectionOptions {
     }
 }
 
-impl EncodeMessage for ServiceConnectionOptions {
+impl EncodeMessage for ServiceProtocolOptions {
     fn encode(&self, buf: &mut BytesMut) -> Bytes {
-        let msg = RawServiceConnectionOptions {
+        let msg = RawServiceProtocolOptions {
             max_payload_size: self.max_payload_size.to_be(),
             max_unacknowledged_data: self.max_unacknowledged_data.to_be(),
         };
@@ -154,10 +154,10 @@ impl EncodeMessage for ServiceConnectionOptions {
     }
 }
 
-/// Raw representation of service connection options.
+/// Raw representation of service protocol connection options.
 #[repr(packed, C)]
 #[derive(Copy, Clone)]
-struct RawServiceConnectionOptions {
+struct RawServiceProtocolOptions {
     max_payload_size: u32,
     max_unacknowledged_data: u32,
 }

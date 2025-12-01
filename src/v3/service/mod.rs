@@ -24,7 +24,13 @@ use self::{
     msg::ServiceConnectionMessage,
 };
 
-use crate::v3::{error::Error, msg::error::ErrorMessage};
+use crate::v3::{
+    connection::{Connection, PingPongHandler},
+    error::Error,
+    msg::{
+        error::ErrorMessage, hello::ServiceProtocolHelloMessage, options::ServiceProtocolOptions,
+    },
+};
 
 /// Service protocol connection builder.
 pub struct ServiceProtocolConnectionBuilder {
@@ -119,6 +125,29 @@ pub struct ServiceProtocolHandshake {
 }
 
 impl ServiceProtocolHandshake {
+    /// Create a new service protocol server handshake.
+    pub(super) fn new(
+        connection: Connection,
+        ping_pong_handler: PingPongHandler,
+        ping_interval: Duration,
+        pong_timeout: Duration,
+        client_hello: ServiceProtocolHelloMessage,
+        local_options: ServiceProtocolOptions,
+    ) -> Self {
+        let rx_capacity = local_options.max_unacknowledged_data();
+
+        let inner = InternalServerHandshake::new(
+            connection,
+            ping_pong_handler,
+            ping_interval,
+            pong_timeout,
+            client_hello,
+            local_options,
+        );
+
+        Self { inner, rx_capacity }
+    }
+
     /// Get the access token provided by the client.
     pub fn access_token(&self) -> &str {
         self.inner.access_token()

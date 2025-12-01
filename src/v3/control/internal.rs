@@ -18,7 +18,8 @@ use crate::{
         error::Error,
         msg::{
             DecodeMessage, EncodeMessage, Message, MessageEncoder, MessageKind,
-            error::ErrorMessage, hello::ClientHelloMessage, options::ControlConnectionOptions,
+            error::ErrorMessage, hello::ControlProtocolHelloMessage,
+            options::ControlProtocolOptions,
         },
     },
 };
@@ -29,11 +30,38 @@ pub struct InternalServerHandshake {
     ping_pong_handler: PingPongHandler,
     ping_interval: Duration,
     pong_timeout: Duration,
-    client_hello: ClientHelloMessage,
-    local_options: ControlConnectionOptions,
+    client_hello: ControlProtocolHelloMessage,
+    local_options: ControlProtocolOptions,
 }
 
 impl InternalServerHandshake {
+    /// Create a new server handshake.
+    pub(super) fn new(
+        connection: Connection,
+        ping_pong_handler: PingPongHandler,
+        ping_interval: Duration,
+        pong_timeout: Duration,
+        client_hello: ControlProtocolHelloMessage,
+        local_options: ControlProtocolOptions,
+    ) -> Self {
+        let remote_options = ControlProtocolOptions::new(65_536, 1);
+
+        let connection = InternalConnection {
+            inner: connection,
+            encoder: MessageEncoder::new(),
+            remote_options,
+        };
+
+        Self {
+            connection,
+            ping_pong_handler,
+            ping_interval,
+            pong_timeout,
+            client_hello,
+            local_options,
+        }
+    }
+
     /// Get the client ID.
     pub fn client_id(&self) -> &ClientId {
         self.client_hello.client_id()
@@ -112,7 +140,7 @@ impl InternalConnectionBuilder {
         self
     }
 
-    /// Connect using the provided IO stream.
+    /// Accept a given connection.
     pub async fn accept<T>(self, io: T) -> Result<InternalServerHandshake, Error>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
@@ -121,7 +149,7 @@ impl InternalConnectionBuilder {
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .build(io);
 
-        let remote_options = ControlConnectionOptions::new(65_536, 1);
+        let remote_options = ControlProtocolOptions::new(65_536, 1);
 
         let mut connection = InternalConnection {
             inner,
@@ -129,7 +157,7 @@ impl InternalConnectionBuilder {
             remote_options,
         };
 
-        let local_options = ControlConnectionOptions::new(
+        let local_options = ControlProtocolOptions::new(
             self.max_rx_payload_size,
             self.max_local_concurrent_requests,
         );
@@ -163,7 +191,7 @@ impl InternalConnectionBuilder {
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .build(io);
 
-        let remote_options = ControlConnectionOptions::new(65_536, 1);
+        let remote_options = ControlProtocolOptions::new(65_536, 1);
 
         let mut res = InternalConnection {
             inner,
@@ -171,7 +199,7 @@ impl InternalConnectionBuilder {
             remote_options,
         };
 
-        let local_options = ControlConnectionOptions::new(
+        let local_options = ControlProtocolOptions::new(
             self.max_rx_payload_size,
             self.max_local_concurrent_requests,
         );
@@ -189,7 +217,7 @@ impl InternalConnectionBuilder {
 pub struct InternalConnection {
     inner: Connection,
     encoder: MessageEncoder,
-    remote_options: ControlConnectionOptions,
+    remote_options: ControlProtocolOptions,
 }
 
 impl InternalConnection {
@@ -199,7 +227,7 @@ impl InternalConnection {
     }
 
     /// Get the remote peer options.
-    pub fn remote_options(&self) -> &ControlConnectionOptions {
+    pub fn remote_options(&self) -> &ControlProtocolOptions {
         &self.remote_options
     }
 
@@ -209,7 +237,7 @@ impl InternalConnection {
         client_id: ClientId,
         client_key: ClientKey,
         client_mac: MacAddr,
-        local_options: ControlConnectionOptions,
+        local_options: ControlProtocolOptions,
     ) -> Result<(), ControlProtocolConnectionError> {
         let res = self
             .client_handshake_internal(client_id, client_key, client_mac, local_options)
@@ -234,13 +262,14 @@ impl InternalConnection {
         client_id: ClientId,
         client_key: ClientKey,
         client_mac: MacAddr,
-        local_options: ControlConnectionOptions,
+        local_options: ControlProtocolOptions,
     ) -> Result<Option<ErrorMessage>, ControlProtocolError> {
-        self.send_message(ClientHelloMessage::new(client_id, client_key, client_mac))
-            .await?;
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
+        self.send_message(hello).await?;
 
         let response = self
-            .read_message(MessageKind::ControlConnectionOptions)
+            .read_message(MessageKind::ControlProtocolOptions)
             .await?;
 
         self.remote_options = match response {
@@ -254,9 +283,9 @@ impl InternalConnection {
     }
 
     /// Perform the service connection handshake.
-    async fn start_server_handshake(&mut self) -> Result<ClientHelloMessage, Error> {
+    async fn start_server_handshake(&mut self) -> Result<ControlProtocolHelloMessage, Error> {
         let res = self
-            .read_message(MessageKind::ClientHello)
+            .read_message(MessageKind::ControlProtocolHello)
             .await
             .and_then(|res| match res {
                 ReadMessageResult::ExpectedMessage(msg) => Ok(msg),
@@ -277,7 +306,7 @@ impl InternalConnection {
     /// Perform the service connection handshake.
     async fn complete_server_handshake(
         &mut self,
-        local_options: ControlConnectionOptions,
+        local_options: ControlProtocolOptions,
     ) -> Result<(), Error> {
         let res = self.complete_server_handshake_internal(local_options).await;
 
@@ -293,12 +322,12 @@ impl InternalConnection {
     /// Perform the service connection handshake.
     async fn complete_server_handshake_internal(
         &mut self,
-        local_options: ControlConnectionOptions,
+        local_options: ControlProtocolOptions,
     ) -> Result<(), ControlProtocolError> {
         self.send_message(local_options).await?;
 
         self.remote_options = self
-            .read_message(MessageKind::ControlConnectionOptions)
+            .read_message(MessageKind::ControlProtocolOptions)
             .await
             .and_then(|res| match res {
                 ReadMessageResult::ExpectedMessage(options) => Ok(options),
