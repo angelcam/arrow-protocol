@@ -1,3 +1,5 @@
+//! Redirect message definitions.
+
 use bytes::BytesMut;
 
 use crate::v3::{
@@ -22,6 +24,7 @@ impl RedirectMessage {
     }
 
     /// Get the redirect target.
+    #[inline]
     pub fn into_target(self) -> String {
         self.target
     }

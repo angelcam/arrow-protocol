@@ -1,3 +1,5 @@
+//! Options message definitions.
+
 use bytes::BytesMut;
 
 use crate::v3::{
@@ -14,6 +16,7 @@ pub struct ControlProtocolOptions {
 
 impl ControlProtocolOptions {
     /// Create new control protocol connection options.
+    #[inline]
     pub const fn new(max_payload_size: u32, max_concurrent_requests: u16) -> Self {
         Self {
             max_payload_size,
@@ -22,11 +25,13 @@ impl ControlProtocolOptions {
     }
 
     /// Get the maximum payload size.
+    #[inline]
     pub fn max_payload_size(&self) -> u32 {
         self.max_payload_size
     }
 
     /// Get the maximum number of concurrent requests.
+    #[inline]
     pub fn max_concurrent_requests(&self) -> u16 {
         self.max_concurrent_requests
     }
@@ -88,6 +93,7 @@ pub struct ServiceProtocolOptions {
 
 impl ServiceProtocolOptions {
     /// Create new service protocol connection options.
+    #[inline]
     pub const fn new(max_payload_size: u32, max_unacknowledged_data: u32) -> Self {
         Self {
             max_payload_size,
@@ -96,11 +102,13 @@ impl ServiceProtocolOptions {
     }
 
     /// Get the maximum payload size.
+    #[inline]
     pub fn max_payload_size(&self) -> u32 {
         self.max_payload_size
     }
 
     /// Get the maximum amount of unacknowledged data.
+    #[inline]
     pub fn max_unacknowledged_data(&self) -> u32 {
         self.max_unacknowledged_data
     }

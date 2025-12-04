@@ -53,6 +53,7 @@ pub struct ControlProtocolConnectionBuilder {
 
 impl ControlProtocolConnectionBuilder {
     /// Create a new builder.
+    #[inline]
     const fn new() -> Self {
         Self {
             max_rx_payload_size: 1024 * 1024,
@@ -63,25 +64,29 @@ impl ControlProtocolConnectionBuilder {
     }
 
     /// Set the maximum payload size for incoming messages.
-    pub fn with_max_rx_payload_size(mut self, size: u32) -> Self {
+    #[inline]
+    pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
         self.max_rx_payload_size = size;
         self
     }
 
     /// Set the maximum number of concurrent incoming requests.
-    pub fn with_max_local_concurrent_requests(mut self, count: u16) -> Self {
+    #[inline]
+    pub const fn with_max_local_concurrent_requests(mut self, count: u16) -> Self {
         self.max_local_concurrent_requests = count;
         self
     }
 
     /// Set the ping interval.
-    pub fn with_ping_interval(mut self, interval: Duration) -> Self {
+    #[inline]
+    pub const fn with_ping_interval(mut self, interval: Duration) -> Self {
         self.ping_interval = interval;
         self
     }
 
     /// Set the pong timeout.
-    pub fn with_pong_timeout(mut self, timeout: Duration) -> Self {
+    #[inline]
+    pub const fn with_pong_timeout(mut self, timeout: Duration) -> Self {
         self.pong_timeout = timeout;
         self
     }
@@ -165,6 +170,7 @@ impl ControlProtocolHandshake {
     }
 
     /// Get the client hello message.
+    #[inline]
     pub fn client_hello(&self) -> &ControlProtocolHelloMessage {
         self.inner.client_hello()
     }
@@ -199,6 +205,7 @@ impl ControlProtocolClientConnection {
     }
 
     /// Get a control protocol connection builder.
+    #[inline]
     pub const fn builder() -> ControlProtocolConnectionBuilder {
         ControlProtocolConnectionBuilder::new()
     }
@@ -247,6 +254,7 @@ impl ControlProtocolServerConnection {
     }
 
     /// Get a control protocol connection builder.
+    #[inline]
     pub const fn builder() -> ControlProtocolConnectionBuilder {
         ControlProtocolConnectionBuilder::new()
     }

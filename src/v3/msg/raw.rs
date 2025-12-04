@@ -1,3 +1,5 @@
+//! Raw data message definitions.
+
 use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::v3::{
@@ -12,11 +14,13 @@ pub struct RawDataMessage {
 
 impl RawDataMessage {
     /// Create a new Raw Data message.
-    pub fn new(data: Bytes) -> Self {
+    #[inline]
+    pub const fn new(data: Bytes) -> Self {
         Self { data }
     }
 
     /// Consume the message and get the raw data.
+    #[inline]
     pub fn into_data(self) -> Bytes {
         self.data
     }
@@ -45,11 +49,13 @@ pub struct RawDataAckMessage {
 
 impl RawDataAckMessage {
     /// Create a new Raw Data ACK message.
+    #[inline]
     pub const fn new(length: u32) -> Self {
         Self { length }
     }
 
     /// Get the acknowledged data length.
+    #[inline]
     pub fn length(&self) -> u32 {
         self.length
     }

@@ -1,3 +1,5 @@
+//! JSON message definitions.
+
 use std::{borrow::Cow, ops::Deref};
 
 use bytes::{Buf, BufMut, Bytes, BytesMut};
@@ -25,7 +27,8 @@ pub struct JsonRpcRequest {
 
 impl JsonRpcRequest {
     /// Create a new JSON-RPC request.
-    pub fn new(id: u64, method: JsonRpcMethod, params: JsonRpcParams) -> Self {
+    #[inline]
+    pub const fn new(id: u64, method: JsonRpcMethod, params: JsonRpcParams) -> Self {
         Self {
             jsonrpc: JsonRpcVersion,
             id,
@@ -35,11 +38,13 @@ impl JsonRpcRequest {
     }
 
     /// Get the request ID.
+    #[inline]
     pub fn id(&self) -> u64 {
         self.id
     }
 
     /// Split the request into its method and parameters.
+    #[inline]
     pub fn deconstruct(self) -> (JsonRpcMethod, JsonRpcParams) {
         (self.method, self.params)
     }
@@ -72,12 +77,14 @@ pub enum JsonRpcResponse {
 
 impl JsonRpcResponse {
     /// Create a new success response.
-    pub fn success(id: u64, result: JsonRpcValue) -> Self {
+    #[inline]
+    pub const fn success(id: u64, result: JsonRpcValue) -> Self {
         Self::Success(JsonRpcSuccessResponse::new(id, result))
     }
 
     /// Create a new error response.
-    pub fn error(id: u64, error: JsonRpcError) -> Self {
+    #[inline]
+    pub const fn error(id: u64, error: JsonRpcError) -> Self {
         Self::Error(JsonRpcErrorResponse::new(id, error))
     }
 
@@ -136,7 +143,8 @@ pub struct JsonRpcSuccessResponse {
 
 impl JsonRpcSuccessResponse {
     /// Create a new JSON-RPC success response.
-    fn new(id: u64, result: JsonRpcValue) -> Self {
+    #[inline]
+    const fn new(id: u64, result: JsonRpcValue) -> Self {
         Self {
             jsonrpc: JsonRpcVersion,
             id,
@@ -173,7 +181,8 @@ pub struct JsonRpcErrorResponse {
 
 impl JsonRpcErrorResponse {
     /// Create a new JSON-RPC error response.
-    fn new(id: u64, error: JsonRpcError) -> Self {
+    #[inline]
+    const fn new(id: u64, error: JsonRpcError) -> Self {
         Self {
             jsonrpc: JsonRpcVersion,
             id,
@@ -190,6 +199,7 @@ impl JsonRpcErrorResponse {
     }
 
     /// Get the error.
+    #[inline]
     pub fn error(&self) -> &JsonRpcError {
         &self.error
     }
@@ -228,28 +238,33 @@ impl JsonRpcError {
     }
 
     /// Set the error data.
+    #[inline]
     pub fn with_data(mut self, data: Option<JsonRpcValue>) -> Self {
         self.data = data;
         self
     }
 
     /// Get the error code.
+    #[inline]
     pub fn code(&self) -> i64 {
         self.code
     }
 
     /// Get the error message.
+    #[inline]
     pub fn message(&self) -> &str {
         &self.message
     }
 
     /// Split the error into its components.
+    #[inline]
     pub fn deconstruct(self) -> (i64, String, Option<JsonRpcValue>) {
         (self.code, self.message, self.data)
     }
 }
 
 impl From<JsonRpcErrorResponse> for JsonRpcError {
+    #[inline]
     fn from(resp: JsonRpcErrorResponse) -> Self {
         resp.error
     }
@@ -280,7 +295,8 @@ pub struct JsonRpcNotification {
 
 impl JsonRpcNotification {
     /// Create a new JSON-RPC notification.
-    pub fn new(method: JsonRpcMethod, params: JsonRpcParams) -> Self {
+    #[inline]
+    pub const fn new(method: JsonRpcMethod, params: JsonRpcParams) -> Self {
         Self {
             jsonrpc: JsonRpcVersion,
             method,
@@ -289,6 +305,7 @@ impl JsonRpcNotification {
     }
 
     /// Split the notification into its method and parameters.
+    #[inline]
     pub fn deconstruct(self) -> (JsonRpcMethod, JsonRpcParams) {
         (self.method, self.params)
     }
@@ -342,12 +359,14 @@ pub struct JsonRpcMethod {
 impl Deref for JsonRpcMethod {
     type Target = str;
 
+    #[inline]
     fn deref(&self) -> &Self::Target {
         &self.inner
     }
 }
 
 impl From<&'static str> for JsonRpcMethod {
+    #[inline]
     fn from(s: &'static str) -> Self {
         Self {
             inner: Cow::Borrowed(s),
@@ -356,6 +375,7 @@ impl From<&'static str> for JsonRpcMethod {
 }
 
 impl From<String> for JsonRpcMethod {
+    #[inline]
     fn from(s: String) -> Self {
         Self {
             inner: Cow::Owned(s),
@@ -376,6 +396,7 @@ impl Deserialize for JsonRpcMethod {
 }
 
 impl Serialize for JsonRpcMethod {
+    #[inline]
     fn serialize(&self) -> Result<Intermediate, serde_lite::Error> {
         <&str>::serialize(&self.inner.as_ref())
     }
@@ -440,6 +461,7 @@ impl Deserialize for JsonRpcParams {
 }
 
 impl Serialize for JsonRpcParams {
+    #[inline]
     fn serialize(&self) -> Result<Intermediate, serde_lite::Error> {
         Ok(self.inner.clone())
     }

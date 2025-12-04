@@ -1,3 +1,5 @@
+//! Hello message definitions.
+
 use bytes::{Buf, BytesMut};
 
 use crate::{
@@ -25,6 +27,7 @@ impl ControlProtocolHelloMessage {
     pub const FLAG_GATEWAY_MODE: u32 = 0x01;
 
     /// Create a new hello message.
+    #[inline]
     pub const fn new(client_id: ClientId, client_key: ClientKey, client_mac: MacAddr) -> Self {
         Self {
             protocol_version: PROTOCOL_VERSION,
@@ -37,6 +40,7 @@ impl ControlProtocolHelloMessage {
     }
 
     /// Set flags.
+    #[inline]
     pub fn with_flags(mut self, flags: u32) -> Self {
         self.flags = flags;
         self
@@ -52,31 +56,37 @@ impl ControlProtocolHelloMessage {
     }
 
     /// Get the protocol version.
+    #[inline]
     pub fn protocol_version(&self) -> u8 {
         self.protocol_version
     }
 
     /// Get the client ID.
+    #[inline]
     pub fn client_id(&self) -> &ClientId {
         &self.client_id
     }
 
     /// Get the client key.
+    #[inline]
     pub fn client_key(&self) -> &ClientKey {
         &self.client_key
     }
 
     /// Get the client MAC address.
+    #[inline]
     pub fn client_mac(&self) -> &MacAddr {
         &self.client_mac
     }
 
     /// Get the flags.
+    #[inline]
     pub fn flags(&self) -> u32 {
         self.flags
     }
 
     /// Get the extended info.
+    #[inline]
     pub fn extended_info(&self) -> &str {
         &self.extended_info
     }
@@ -175,6 +185,7 @@ impl ServiceProtocolHelloMessage {
     }
 
     /// Get the access token.
+    #[inline]
     pub fn access_token(&self) -> &str {
         &self.access_token
     }

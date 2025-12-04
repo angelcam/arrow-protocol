@@ -24,6 +24,7 @@ impl Error {
     }
 
     /// Create a new error with a given message.
+    #[inline]
     pub const fn from_static_msg(msg: &'static str) -> Self {
         Self {
             msg: Cow::Borrowed(msg),
@@ -83,6 +84,7 @@ impl Display for Error {
 }
 
 impl std::error::Error for Error {
+    #[inline]
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         self.cause.as_ref().map(|cause| &**cause as _)
     }

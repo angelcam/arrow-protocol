@@ -1,3 +1,5 @@
+//! Error message definitions.
+
 use std::fmt::{self, Display, Formatter};
 
 use bytes::{Buf, BufMut, BytesMut};
@@ -43,6 +45,7 @@ impl AsRef<str> for ErrorMessage {
 }
 
 impl Display for ErrorMessage {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str(self.as_ref())
     }

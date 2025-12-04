@@ -35,6 +35,7 @@ pub enum InvalidMessage {
 
 impl InvalidMessage {
     /// Check if more data is required to decode the message.
+    #[inline]
     pub fn is_incomplete(&self) -> bool {
         matches!(self, Self::IncompleteMessage)
     }

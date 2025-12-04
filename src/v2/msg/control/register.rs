@@ -130,7 +130,6 @@ impl RegisterMessage {
     }
 
     /// Set the extended info.
-    #[inline]
     pub fn with_extended_info<T>(mut self, info: T) -> Self
     where
         T: ToString,

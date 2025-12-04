@@ -1,3 +1,5 @@
+//! Arrow Protocol v3 implementation.
+
 mod connection;
 mod control;
 mod error;
@@ -24,8 +26,6 @@ use self::{
     },
 };
 
-use crate::v3::error::Error;
-
 pub use self::{
     control::{
         ControlProtocolClientConnection, ControlProtocolClientConnectionHandle,
@@ -33,6 +33,7 @@ pub use self::{
         ControlProtocolServerConnection, ControlProtocolServerConnectionHandle,
         ControlProtocolService,
     },
+    error::Error,
     service::{
         ServiceProtocolConnection, ServiceProtocolConnectionBuilder, ServiceProtocolHandshake,
     },
@@ -47,12 +48,14 @@ pub enum ArrowProtocolHandshake {
 }
 
 impl From<ControlProtocolHandshake> for ArrowProtocolHandshake {
+    #[inline]
     fn from(handshake: ControlProtocolHandshake) -> Self {
         Self::Control(handshake)
     }
 }
 
 impl From<ServiceProtocolHandshake> for ArrowProtocolHandshake {
+    #[inline]
     fn from(handshake: ServiceProtocolHandshake) -> Self {
         Self::Service(handshake)
     }
@@ -86,6 +89,7 @@ impl ArrowProtocolAcceptor {
     }
 
     /// Set the maximum payload size for incoming messages.
+    #[inline]
     pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
         self.max_rx_payload_size = size;
         self
@@ -93,6 +97,7 @@ impl ArrowProtocolAcceptor {
 
     /// Set the maximum number of concurrent incoming requests (for control
     /// protocol connections).
+    #[inline]
     pub const fn with_max_local_concurrent_requests(mut self, count: u16) -> Self {
         self.max_local_concurrent_requests = count;
         self
@@ -100,18 +105,21 @@ impl ArrowProtocolAcceptor {
 
     /// Set the maximum amount of unacknowledged incoming data (for service
     /// protocol connections).
+    #[inline]
     pub const fn with_rx_capacity(mut self, size: u32) -> Self {
         self.rx_capacity = size;
         self
     }
 
     /// Set the ping interval.
+    #[inline]
     pub const fn with_ping_interval(mut self, interval: Duration) -> Self {
         self.ping_interval = interval;
         self
     }
 
     /// Set the pong timeout.
+    #[inline]
     pub const fn with_pong_timeout(mut self, timeout: Duration) -> Self {
         self.pong_timeout = timeout;
         self

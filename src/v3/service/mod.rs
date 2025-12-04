@@ -42,6 +42,7 @@ pub struct ServiceProtocolConnectionBuilder {
 
 impl ServiceProtocolConnectionBuilder {
     /// Create a new service connection builder.
+    #[inline]
     const fn new() -> Self {
         Self {
             max_rx_payload_size: 65536,
@@ -52,24 +53,28 @@ impl ServiceProtocolConnectionBuilder {
     }
 
     /// Set the maximum payload size for incoming messages.
+    #[inline]
     pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
         self.max_rx_payload_size = size;
         self
     }
 
     /// Set the maximum amount of unacknowledged incoming data.
+    #[inline]
     pub const fn with_rx_capacity(mut self, size: u32) -> Self {
         self.rx_capacity = size;
         self
     }
 
     /// Set the PING interval.
+    #[inline]
     pub const fn with_ping_interval(mut self, interval: Duration) -> Self {
         self.ping_interval = interval;
         self
     }
 
     /// Set the PONG timeout.
+    #[inline]
     pub const fn with_pong_timeout(mut self, timeout: Duration) -> Self {
         self.pong_timeout = timeout;
         self
@@ -148,6 +153,7 @@ impl ServiceProtocolHandshake {
     }
 
     /// Get the client hello message.
+    #[inline]
     pub fn client_hello(&self) -> &ServiceProtocolHelloMessage {
         self.inner.client_hello()
     }
@@ -205,6 +211,7 @@ impl ServiceProtocolConnection {
     }
 
     /// Get a service connection builder.
+    #[inline]
     pub fn builder() -> ServiceProtocolConnectionBuilder {
         ServiceProtocolConnectionBuilder::new()
     }

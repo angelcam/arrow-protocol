@@ -1,3 +1,5 @@
+//! Arrow Protocol v3 messages.
+
 pub mod error;
 pub mod hello;
 pub mod json;
@@ -24,6 +26,7 @@ impl UnknownMessageKind {
 }
 
 impl Display for UnknownMessageKind {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.write_str("unknown message kind")
     }
@@ -100,6 +103,7 @@ pub struct EncodedMessage {
 
 impl EncodedMessage {
     /// Create a new encoded message.
+    #[inline]
     pub const fn new(kind: MessageKind, payload: Bytes) -> Self {
         assert!(payload.len() <= (u32::MAX as usize));
 
@@ -107,6 +111,7 @@ impl EncodedMessage {
     }
 
     /// Create a new encoded message.
+    #[inline]
     pub(crate) const fn new_with_version(
         protocol_version: u8,
         kind: MessageKind,
@@ -120,16 +125,19 @@ impl EncodedMessage {
     }
 
     /// Get the protocol version.
+    #[inline]
     pub fn protocol_version(&self) -> u8 {
         self.protocol_version
     }
 
     /// Get the message kind.
+    #[inline]
     pub fn kind(&self) -> MessageKind {
         self.kind
     }
 
     /// Get the message payload.
+    #[inline]
     pub fn data(&self) -> &Bytes {
         &self.payload
     }
@@ -143,6 +151,7 @@ pub struct MessageEncoder {
 
 impl MessageEncoder {
     /// Create a new message encoder.
+    #[inline]
     pub fn new() -> Self {
         Self {
             buffer: BytesMut::new(),

@@ -90,12 +90,14 @@ pub struct InvalidControlMessage {
 }
 
 impl Debug for InvalidControlMessage {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Display::fmt(self, f)
     }
 }
 
 impl Display for InvalidControlMessage {
+    #[inline]
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Display::fmt(&self.inner, f)
     }
@@ -116,6 +118,7 @@ impl From<UnexpectedEof> for InvalidControlMessage {
 }
 
 impl From<UnknownControlMessage> for InvalidControlMessage {
+    #[inline]
     fn from(err: UnknownControlMessage) -> Self {
         Self::from(InvalidControlMessageInner::from(err))
     }
@@ -215,7 +218,6 @@ impl ControlMessage {
     }
 
     /// Create a new redirect message.
-    #[inline]
     pub fn new_redirect_message<T>(message_id: u16, address: T) -> Self
     where
         T: ToString,
@@ -274,7 +276,6 @@ impl ControlMessage {
     }
 
     /// Create a new scan report message.
-    #[inline]
     pub fn new_scan_report_message<T>(
         message_id: u16,
         request_id: u16,
@@ -334,7 +335,6 @@ impl ControlMessage {
     }
 
     /// Set message payload.
-    #[inline]
     pub fn with_payload<T>(mut self, payload: T) -> Self
     where
         T: Into<ControlMessagePayload>,

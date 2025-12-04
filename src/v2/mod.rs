@@ -1,3 +1,5 @@
+//! Arrow Protocol v2 implementation.
+
 mod utils;
 
 pub mod msg;

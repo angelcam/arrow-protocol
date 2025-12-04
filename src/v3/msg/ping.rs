@@ -1,3 +1,5 @@
+//! PING-PONG message definitions.
+
 use bytes::{Buf, BufMut, BytesMut};
 
 use crate::v3::{
@@ -12,11 +14,13 @@ pub struct PingMessage {
 
 impl PingMessage {
     /// Create a new Ping message.
+    #[inline]
     pub const fn new(id: u16) -> Self {
         Self { id }
     }
 
     /// Get the ping identifier.
+    #[inline]
     pub fn id(&self) -> u16 {
         self.id
     }
@@ -57,11 +61,13 @@ pub struct PongMessage {
 
 impl PongMessage {
     /// Create a new Pong message.
+    #[inline]
     pub const fn new(id: u16) -> Self {
         Self { id }
     }
 
     /// Get the pong identifier.
+    #[inline]
     pub fn id(&self) -> u16 {
         self.id
     }
