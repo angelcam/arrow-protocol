@@ -27,7 +27,7 @@ use self::{
 use crate::v3::{
     error::Error,
     msg::{
-        DecodeMessage, EncodeMessage, EncodedMessage, Message, MessageEncoder, MessageKind,
+        DecodeMessage, EncodeMessage, EncodedMessage, MessageEncoder, MessageKind,
         error::ErrorMessage,
         ping::{PingMessage, PongMessage},
     },
@@ -257,10 +257,7 @@ impl IncomingMessageReader {
     async fn process_ping_message(&mut self, msg: EncodedMessage) -> Result<(), ConnectionError> {
         debug_assert_eq!(msg.kind(), MessageKind::Ping);
 
-        let payload = msg.data();
-
-        let ping =
-            PingMessage::decode(&mut payload.clone()).map_err(ConnectionError::InvalidMessage)?;
+        let ping = PingMessage::decode(&msg).map_err(ConnectionError::InvalidMessage)?;
 
         let _ = self.send_message(PongMessage::new(ping.id())).await;
 
@@ -271,10 +268,7 @@ impl IncomingMessageReader {
     async fn process_pong_message(&mut self, msg: EncodedMessage) -> Result<(), ConnectionError> {
         debug_assert_eq!(msg.kind(), MessageKind::Pong);
 
-        let payload = msg.data();
-
-        let pong =
-            PongMessage::decode(&mut payload.clone()).map_err(ConnectionError::InvalidMessage)?;
+        let pong = PongMessage::decode(&msg).map_err(ConnectionError::InvalidMessage)?;
 
         let _ = self.incoming_pong_tx.send(pong.id()).await;
 
@@ -284,7 +278,7 @@ impl IncomingMessageReader {
     /// Send a message.
     async fn send_message<T>(&mut self, msg: T) -> Result<(), SendError>
     where
-        T: Message + EncodeMessage,
+        T: EncodeMessage,
     {
         self.outgoing_message_tx
             .send(self.encoder.encode(&msg))

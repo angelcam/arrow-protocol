@@ -1,10 +1,10 @@
 use std::fmt::{self, Display, Formatter};
 
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 use crate::v3::{
     error::Error,
-    msg::{DecodeMessage, EncodeMessage, Message, MessageKind},
+    msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
 };
 
 /// Error message.
@@ -21,6 +21,7 @@ pub enum ErrorMessage {
     TooManyConcurrentRequests = 0x07,
     UnexpectedResponseId = 0x08,
     ChannelCapacityExceeded = 0x09,
+    InternalServerError = 0xff,
 }
 
 impl AsRef<str> for ErrorMessage {
@@ -36,6 +37,7 @@ impl AsRef<str> for ErrorMessage {
             Self::TooManyConcurrentRequests => "too many concurrent requests",
             Self::UnexpectedResponseId => "unexpected response ID",
             Self::ChannelCapacityExceeded => "channel capacity exceeded",
+            Self::InternalServerError => "internal server error",
         }
     }
 }
@@ -46,14 +48,14 @@ impl Display for ErrorMessage {
     }
 }
 
-impl Message for ErrorMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::Error
-    }
-}
-
 impl DecodeMessage for ErrorMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::Error);
+
+        let data = encoded.data();
+
+        let mut buf = data.clone();
+
         if buf.is_empty() {
             Err(Error::from_static_msg("error message too short"))
         } else {
@@ -63,12 +65,12 @@ impl DecodeMessage for ErrorMessage {
 }
 
 impl EncodeMessage for ErrorMessage {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         buf.put_u8(*self as u8);
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::Error, data.freeze())
     }
 }
 
@@ -87,6 +89,7 @@ impl TryFrom<u8> for ErrorMessage {
             0x07 => Self::TooManyConcurrentRequests,
             0x08 => Self::UnexpectedResponseId,
             0x09 => Self::ChannelCapacityExceeded,
+            0xff => Self::InternalServerError,
             _ => return Err(Error::from_static_msg("unknown error code")),
         };
 

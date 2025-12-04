@@ -1,5 +1,3 @@
-use bytes::Bytes;
-
 use crate::v3::{
     msg::{
         DecodeMessage, EncodedMessage, MessageKind,
@@ -19,23 +17,21 @@ pub enum ServiceConnectionMessage {
 impl ServiceConnectionMessage {
     /// Decode a service connection message.
     pub fn decode(msg: &EncodedMessage) -> Result<Self, ServiceProtocolError> {
-        let data = msg.data();
-
         match msg.kind() {
-            MessageKind::RawData => Self::decode_message::<RawDataMessage>(&mut data.clone()),
-            MessageKind::RawDataAck => Self::decode_message::<RawDataAckMessage>(&mut data.clone()),
-            MessageKind::Error => Self::decode_message::<ErrorMessage>(&mut data.clone()),
+            MessageKind::RawData => Self::decode_message::<RawDataMessage>(msg),
+            MessageKind::RawDataAck => Self::decode_message::<RawDataAckMessage>(msg),
+            MessageKind::Error => Self::decode_message::<ErrorMessage>(msg),
             _ => Err(ServiceProtocolError::UnexpectedMessageType(msg.kind())),
         }
     }
 
     /// Decode a specific message type.
-    fn decode_message<T>(data: &mut Bytes) -> Result<Self, ServiceProtocolError>
+    fn decode_message<T>(msg: &EncodedMessage) -> Result<Self, ServiceProtocolError>
     where
         T: DecodeMessage,
         Self: From<T>,
     {
-        let msg = T::decode(data).map_err(ServiceProtocolError::InvalidMessage)?;
+        let msg = T::decode(msg).map_err(ServiceProtocolError::InvalidMessage)?;
 
         let res = Self::from(msg);
 

@@ -1,8 +1,8 @@
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::BytesMut;
 
 use crate::v3::{
     error::Error,
-    msg::{DecodeMessage, EncodeMessage, Message, MessageKind},
+    msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
     utils::{AsBytes, FromBytes},
 };
 
@@ -32,37 +32,33 @@ impl ControlProtocolOptions {
     }
 }
 
-impl Message for ControlProtocolOptions {
-    fn kind(&self) -> MessageKind {
-        MessageKind::ControlProtocolOptions
-    }
-}
-
 impl DecodeMessage for ControlProtocolOptions {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::ControlProtocolOptions);
+
+        let data = encoded.data();
+
         let size = std::mem::size_of::<RawControlProtocolOptions>();
 
-        if buf.len() < size {
+        if data.len() < size {
             return Err(Error::from_static_msg(
                 "control protocol options message too short",
             ));
         }
 
-        let raw = RawControlProtocolOptions::from_bytes(buf);
+        let raw = RawControlProtocolOptions::from_bytes(data);
 
         let res = Self {
             max_payload_size: u32::from_be(raw.max_payload_size),
             max_concurrent_requests: u16::from_be(raw.max_concurrent_requests),
         };
 
-        buf.advance(size);
-
         Ok(res)
     }
 }
 
 impl EncodeMessage for ControlProtocolOptions {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         let msg = RawControlProtocolOptions {
             max_payload_size: self.max_payload_size.to_be(),
             max_concurrent_requests: self.max_concurrent_requests.to_be(),
@@ -72,7 +68,7 @@ impl EncodeMessage for ControlProtocolOptions {
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::ControlProtocolOptions, data.freeze())
     }
 }
 
@@ -110,37 +106,33 @@ impl ServiceProtocolOptions {
     }
 }
 
-impl Message for ServiceProtocolOptions {
-    fn kind(&self) -> MessageKind {
-        MessageKind::ServiceProtocolOptions
-    }
-}
-
 impl DecodeMessage for ServiceProtocolOptions {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::ServiceProtocolOptions);
+
+        let data = encoded.data();
+
         let size = std::mem::size_of::<RawServiceProtocolOptions>();
 
-        if buf.len() < size {
+        if data.len() < size {
             return Err(Error::from_static_msg(
                 "service protocol options message too short",
             ));
         }
 
-        let raw = RawServiceProtocolOptions::from_bytes(buf);
+        let raw = RawServiceProtocolOptions::from_bytes(data);
 
         let res = Self {
             max_payload_size: u32::from_be(raw.max_payload_size),
             max_unacknowledged_data: u32::from_be(raw.max_unacknowledged_data),
         };
 
-        buf.advance(size);
-
         Ok(res)
     }
 }
 
 impl EncodeMessage for ServiceProtocolOptions {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         let msg = RawServiceProtocolOptions {
             max_payload_size: self.max_payload_size.to_be(),
             max_unacknowledged_data: self.max_unacknowledged_data.to_be(),
@@ -150,7 +142,7 @@ impl EncodeMessage for ServiceProtocolOptions {
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::ServiceProtocolOptions, data.freeze())
     }
 }
 

@@ -2,7 +2,7 @@ use bytes::{Buf, BufMut, Bytes, BytesMut};
 
 use crate::v3::{
     error::Error,
-    msg::{DecodeMessage, EncodeMessage, Message, MessageKind},
+    msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
 };
 
 /// Message carrying raw data.
@@ -22,21 +22,19 @@ impl RawDataMessage {
     }
 }
 
-impl Message for RawDataMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::RawData
-    }
-}
-
 impl DecodeMessage for RawDataMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
-        Ok(Self::new(buf.split_to(buf.len())))
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::RawData);
+
+        let data = encoded.data();
+
+        Ok(Self::new(data.clone()))
     }
 }
 
 impl EncodeMessage for RawDataMessage {
-    fn encode(&self, _: &mut BytesMut) -> Bytes {
-        self.data.clone()
+    fn encode(&self, _: &mut BytesMut) -> EncodedMessage {
+        EncodedMessage::new(MessageKind::RawData, self.data.clone())
     }
 }
 
@@ -57,14 +55,14 @@ impl RawDataAckMessage {
     }
 }
 
-impl Message for RawDataAckMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::RawDataAck
-    }
-}
-
 impl DecodeMessage for RawDataAckMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::RawDataAck);
+
+        let data = encoded.data();
+
+        let mut buf = data.clone();
+
         if buf.len() < std::mem::size_of::<u32>() {
             return Err(Error::from_static_msg("raw data ACK message too short"));
         }
@@ -78,11 +76,11 @@ impl DecodeMessage for RawDataAckMessage {
 }
 
 impl EncodeMessage for RawDataAckMessage {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         buf.put_u32(self.length);
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::RawDataAck, data.freeze())
     }
 }

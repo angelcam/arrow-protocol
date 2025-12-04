@@ -71,7 +71,7 @@ pub mod tests {
     use tokio_util::io::StreamReader;
 
     use crate::v3::{
-        msg::{EncodeMessage, EncodedMessage, Message, MessageEncoder, MessageKind},
+        msg::{EncodeMessage, EncodedMessage, MessageEncoder, MessageKind},
         utils::FromBytes,
     };
 
@@ -193,7 +193,7 @@ pub mod tests {
 
     impl<T> MessageExt for T
     where
-        T: Message + EncodeMessage,
+        T: EncodeMessage,
     {
         fn to_encoded_message(&self) -> EncodedMessage {
             let mut encoder = MessageEncoder::new();

@@ -11,7 +11,7 @@ use crate::v3::{
     connection::{Connection, PingPongHandler},
     error::Error,
     msg::{
-        DecodeMessage, EncodeMessage, Message, MessageEncoder, MessageKind, error::ErrorMessage,
+        DecodeMessage, EncodeMessage, MessageEncoder, MessageKind, error::ErrorMessage,
         hello::ServiceProtocolHelloMessage, options::ServiceProtocolOptions,
     },
     service::{error::ServiceProtocolError, msg::ServiceConnectionMessage},
@@ -55,9 +55,9 @@ impl InternalServerHandshake {
         }
     }
 
-    /// Get the access token received from the client.
-    pub fn access_token(&self) -> &str {
-        self.client_hello.access_token()
+    /// Get the client hello message.
+    pub fn client_hello(&self) -> &ServiceProtocolHelloMessage {
+        &self.client_hello
     }
 
     /// Accept the connection.
@@ -157,13 +157,14 @@ impl InternalConnectionBuilder {
     }
 
     /// Build the connection.
-    pub async fn connect<T, U>(self, io: T, access_token: U) -> Result<InternalConnection, Error>
+    pub async fn connect<T>(
+        self,
+        io: T,
+        hello: ServiceProtocolHelloMessage,
+    ) -> Result<InternalConnection, Error>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
-        U: Into<String>,
     {
-        let access_token = access_token.into();
-
         let (inner, ping_pong_handler) = Connection::builder()
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .build(io);
@@ -178,7 +179,7 @@ impl InternalConnectionBuilder {
             remote_options,
         };
 
-        res.client_handshake(access_token, local_options).await?;
+        res.client_handshake(hello, local_options).await?;
 
         tokio::spawn(ping_pong_handler.run(self.ping_interval, self.pong_timeout));
 
@@ -207,12 +208,10 @@ impl InternalConnection {
     /// Perform the service connection handshake.
     async fn client_handshake(
         &mut self,
-        access_token: String,
+        hello: ServiceProtocolHelloMessage,
         local_options: ServiceProtocolOptions,
     ) -> Result<(), Error> {
-        let res = self
-            .client_handshake_internal(access_token, local_options)
-            .await;
+        let res = self.client_handshake_internal(hello, local_options).await;
 
         if let Err(err) = res.as_ref()
             && let Some(msg) = err.to_error_message()
@@ -226,11 +225,10 @@ impl InternalConnection {
     /// Perform the service connection handshake.
     async fn client_handshake_internal(
         &mut self,
-        access_token: String,
+        hello: ServiceProtocolHelloMessage,
         local_options: ServiceProtocolOptions,
     ) -> Result<(), ServiceProtocolError> {
-        self.send_message(ServiceProtocolHelloMessage::new(access_token))
-            .await?;
+        self.send_message(hello).await?;
 
         self.remote_options = self
             .read_message(MessageKind::ServiceProtocolOptions)
@@ -295,8 +293,6 @@ impl InternalConnection {
             .and_then(|res| res)
             .map_err(ServiceProtocolError::Other)?;
 
-        let data = msg.data();
-
         match msg.kind() {
             MessageKind::Error => {
                 // NOTE: We don't send any error message back here, as the
@@ -304,15 +300,13 @@ impl InternalConnection {
                 //   the error message. That's why we return
                 //   `ServiceProtocolError::Other` here.
 
-                let err = ErrorMessage::decode(&mut data.clone())
+                let err = ErrorMessage::decode(&msg)
                     .map(|msg| Error::from_msg(format!("received error message: {msg}")))
                     .unwrap_or_else(|err| err);
 
                 Err(ServiceProtocolError::Other(err))
             }
-            k if k == kind => {
-                T::decode(&mut data.clone()).map_err(ServiceProtocolError::InvalidMessage)
-            }
+            k if k == kind => T::decode(&msg).map_err(ServiceProtocolError::InvalidMessage),
             k => Err(ServiceProtocolError::UnexpectedMessageType(k)),
         }
     }
@@ -320,7 +314,7 @@ impl InternalConnection {
     /// Send a given message.
     async fn send_message<T>(&mut self, msg: T) -> Result<(), ServiceProtocolError>
     where
-        T: Message + EncodeMessage,
+        T: EncodeMessage,
     {
         self.inner
             .send(self.encoder.encode(&msg))
@@ -386,7 +380,10 @@ mod tests {
     use bytes::Bytes;
     use futures::{SinkExt, StreamExt};
 
-    use crate::v3::utils::tests::{FakeIo, create_fake_io_input, create_fake_io_output};
+    use crate::v3::{
+        msg::hello::ServiceProtocolHelloMessage,
+        utils::tests::{FakeIo, create_fake_io_input, create_fake_io_output},
+    };
 
     use super::InternalConnection;
 
@@ -411,7 +408,7 @@ mod tests {
             .with_rx_capacity(2048)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, "foo")
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
             .await
             .unwrap();
 
@@ -463,7 +460,7 @@ mod tests {
             .with_rx_capacity(1024)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, "foo")
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
             .await
             .err()
             .unwrap();
@@ -498,7 +495,7 @@ mod tests {
             .with_rx_capacity(1024)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, "foo")
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
             .await
             .err()
             .unwrap();
@@ -537,7 +534,7 @@ mod tests {
             .with_max_rx_payload_size(1024)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, "foo")
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
             .await
             .err()
             .unwrap();

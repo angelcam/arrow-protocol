@@ -1,8 +1,8 @@
-use bytes::{Bytes, BytesMut};
+use bytes::BytesMut;
 
 use crate::v3::{
     error::Error,
-    msg::{DecodeMessage, EncodeMessage, Message, MessageKind},
+    msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
 };
 
 /// Redirect message.
@@ -11,20 +11,30 @@ pub struct RedirectMessage {
 }
 
 impl RedirectMessage {
+    /// Create a new redirect message.
+    pub fn new<T>(target: T) -> Self
+    where
+        T: Into<String>,
+    {
+        Self {
+            target: target.into(),
+        }
+    }
+
     /// Get the redirect target.
     pub fn into_target(self) -> String {
         self.target
     }
 }
 
-impl Message for RedirectMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::Redirect
-    }
-}
-
 impl DecodeMessage for RedirectMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::Redirect);
+
+        let data = encoded.data();
+
+        let mut buf = data.clone();
+
         let null_pos = buf
             .iter()
             .position(|&b| b == 0)
@@ -41,7 +51,7 @@ impl DecodeMessage for RedirectMessage {
 }
 
 impl EncodeMessage for RedirectMessage {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         buf.reserve(1 + self.target.len());
 
         buf.extend_from_slice(self.target.as_bytes());
@@ -49,6 +59,6 @@ impl EncodeMessage for RedirectMessage {
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::Redirect, data.freeze())
     }
 }

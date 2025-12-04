@@ -1,29 +1,59 @@
-use bytes::{Buf, Bytes, BytesMut};
+use bytes::{Buf, BytesMut};
 
 use crate::{
     ClientId, ClientKey, MacAddr,
     v3::{
+        PROTOCOL_VERSION,
         error::Error,
-        msg::{DecodeMessage, EncodeMessage, Message, MessageKind},
+        msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
         utils::{AsBytes, FromBytes},
     },
 };
 
 /// Control protocol hello message.
 pub struct ControlProtocolHelloMessage {
+    protocol_version: u8,
     client_id: ClientId,
     client_key: ClientKey,
     client_mac: MacAddr,
+    flags: u32,
+    extended_info: String,
 }
 
 impl ControlProtocolHelloMessage {
+    /// Flag indicating that the client can be used as a gateway.
+    pub const FLAG_GATEWAY_MODE: u32 = 0x01;
+
     /// Create a new hello message.
     pub const fn new(client_id: ClientId, client_key: ClientKey, client_mac: MacAddr) -> Self {
         Self {
+            protocol_version: PROTOCOL_VERSION,
             client_id,
             client_key,
             client_mac,
+            flags: 0,
+            extended_info: String::new(),
         }
+    }
+
+    /// Set flags.
+    pub fn with_flags(mut self, flags: u32) -> Self {
+        self.flags = flags;
+        self
+    }
+
+    /// Set extended info.
+    pub fn with_extended_info<T>(mut self, extended_info: T) -> Self
+    where
+        T: Into<String>,
+    {
+        self.extended_info = extended_info.into();
+        self
+    }
+
+    /// Get the protocol version.
+    pub fn protocol_version(&self) -> u8 {
+        self.protocol_version
     }
 
     /// Get the client ID.
@@ -40,16 +70,26 @@ impl ControlProtocolHelloMessage {
     pub fn client_mac(&self) -> &MacAddr {
         &self.client_mac
     }
-}
 
-impl Message for ControlProtocolHelloMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::ControlProtocolHello
+    /// Get the flags.
+    pub fn flags(&self) -> u32 {
+        self.flags
+    }
+
+    /// Get the extended info.
+    pub fn extended_info(&self) -> &str {
+        &self.extended_info
     }
 }
 
 impl DecodeMessage for ControlProtocolHelloMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::ControlProtocolHello);
+
+        let data = encoded.data();
+
+        let mut buf = data.clone();
+
         let size = std::mem::size_of::<RawControlProtocolHelloMessage>();
 
         if buf.len() < size {
@@ -58,33 +98,53 @@ impl DecodeMessage for ControlProtocolHelloMessage {
             ));
         }
 
-        let raw = RawControlProtocolHelloMessage::from_bytes(buf);
+        let raw = RawControlProtocolHelloMessage::from_bytes(&buf);
+
+        buf.advance(size);
+
+        let null_pos = buf
+            .iter()
+            .position(|&b| b == 0)
+            .ok_or_else(|| Error::from_static_msg("invalid control protocol hello message"))?;
+
+        let extended_info = str::from_utf8(&buf.split_to(null_pos))
+            .map_err(|_| Error::from_static_msg("extended info is not UTF-8 encoded"))?
+            .to_string();
 
         let res = Self {
+            protocol_version: encoded.protocol_version(),
             client_id: ClientId::from_bytes(raw.client_id),
             client_key: raw.client_key,
             client_mac: MacAddr::from(raw.client_mac),
+            flags: u32::from_be(raw.flags),
+            extended_info,
         };
-
-        buf.advance(size);
 
         Ok(res)
     }
 }
 
 impl EncodeMessage for ControlProtocolHelloMessage {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
+        let len =
+            std::mem::size_of::<RawControlProtocolHelloMessage>() + self.extended_info.len() + 1;
+
+        buf.reserve(len);
+
         let msg = RawControlProtocolHelloMessage {
             client_id: self.client_id.into_bytes(),
             client_key: self.client_key,
             client_mac: self.client_mac.into_array(),
+            flags: self.flags.to_be(),
         };
 
         buf.extend_from_slice(msg.as_bytes());
+        buf.extend_from_slice(self.extended_info.as_bytes());
+        buf.extend_from_slice(&[0]);
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::ControlProtocolHello, data.freeze())
     }
 }
 
@@ -95,6 +155,7 @@ struct RawControlProtocolHelloMessage {
     client_id: [u8; 16],
     client_key: [u8; 16],
     client_mac: [u8; 6],
+    flags: u32,
 }
 
 /// Service protocol hello message.
@@ -119,14 +180,14 @@ impl ServiceProtocolHelloMessage {
     }
 }
 
-impl Message for ServiceProtocolHelloMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::ServiceProtocolHello
-    }
-}
-
 impl DecodeMessage for ServiceProtocolHelloMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::ServiceProtocolHello);
+
+        let data = encoded.data();
+
+        let mut buf = data.clone();
+
         let null_pos = buf
             .iter()
             .position(|&b| b == 0)
@@ -143,7 +204,7 @@ impl DecodeMessage for ServiceProtocolHelloMessage {
 }
 
 impl EncodeMessage for ServiceProtocolHelloMessage {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         buf.reserve(1 + self.access_token.len());
 
         buf.extend_from_slice(self.access_token.as_bytes());
@@ -151,6 +212,6 @@ impl EncodeMessage for ServiceProtocolHelloMessage {
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::ServiceProtocolHello, data.freeze())
     }
 }

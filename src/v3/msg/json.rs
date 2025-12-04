@@ -5,7 +5,7 @@ use serde_lite::{Deserialize, Intermediate, Serialize};
 
 use crate::v3::{
     error::Error,
-    msg::{DecodeMessage, EncodeMessage, Message, MessageKind},
+    msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
 };
 
 /// JSON-RPC value.
@@ -45,22 +45,22 @@ impl JsonRpcRequest {
     }
 }
 
-impl Message for JsonRpcRequest {
-    fn kind(&self) -> MessageKind {
-        MessageKind::JsonRpcRequest
-    }
-}
-
 impl DecodeMessage for JsonRpcRequest {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
-        decode_json_value(buf)
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::JsonRpcRequest);
+
+        let data = encoded.data();
+
+        decode_json_value(&mut data.clone())
             .map_err(|err| Error::from_static_msg_and_cause("invalid JSON-RPC request", err))
     }
 }
 
 impl EncodeMessage for JsonRpcRequest {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
-        encode_json_value(self, buf).expect("unable to serialize JSON-RPC request")
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
+        let data = encode_json_value(self, buf).expect("unable to serialize JSON-RPC request");
+
+        EncodedMessage::new(MessageKind::JsonRpcRequest, data)
     }
 }
 
@@ -90,15 +90,13 @@ impl JsonRpcResponse {
     }
 }
 
-impl Message for JsonRpcResponse {
-    fn kind(&self) -> MessageKind {
-        MessageKind::JsonRpcResponse
-    }
-}
-
 impl DecodeMessage for JsonRpcResponse {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
-        let r: JsonRpcUnifiedResponse = decode_json_value(buf)
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::JsonRpcResponse);
+
+        let data = encoded.data();
+
+        let r: JsonRpcUnifiedResponse = decode_json_value(&mut data.clone())
             .map_err(|err| Error::from_static_msg_and_cause("invalid JSON-RPC response", err))?;
 
         let res = match (r.result, r.error) {
@@ -120,7 +118,7 @@ impl DecodeMessage for JsonRpcResponse {
 }
 
 impl EncodeMessage for JsonRpcResponse {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         match self {
             Self::Success(r) => r.encode(buf),
             Self::Error(r) => r.encode(buf),
@@ -147,8 +145,11 @@ impl JsonRpcSuccessResponse {
     }
 
     /// Encode the response.
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
-        encode_json_value(self, buf).expect("unable to serialize JSON-RPC success response")
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
+        let data =
+            encode_json_value(self, buf).expect("unable to serialize JSON-RPC success response");
+
+        EncodedMessage::new(MessageKind::JsonRpcResponse, data)
     }
 
     /// Deserialize the result.
@@ -181,8 +182,16 @@ impl JsonRpcErrorResponse {
     }
 
     /// Encode the response.
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
-        encode_json_value(self, buf).expect("unable to serialize JSON-RPC error response")
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
+        let data =
+            encode_json_value(self, buf).expect("unable to serialize JSON-RPC error response");
+
+        EncodedMessage::new(MessageKind::JsonRpcResponse, data)
+    }
+
+    /// Get the error.
+    pub fn error(&self) -> &JsonRpcError {
+        &self.error
     }
 }
 
@@ -285,22 +294,22 @@ impl JsonRpcNotification {
     }
 }
 
-impl Message for JsonRpcNotification {
-    fn kind(&self) -> MessageKind {
-        MessageKind::JsonRpcNotification
-    }
-}
-
 impl DecodeMessage for JsonRpcNotification {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
-        decode_json_value(buf)
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::JsonRpcNotification);
+
+        let data = encoded.data();
+
+        decode_json_value(&mut data.clone())
             .map_err(|err| Error::from_static_msg_and_cause("invalid JSON-RPC notification", err))
     }
 }
 
 impl EncodeMessage for JsonRpcNotification {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
-        encode_json_value(self, buf).expect("unable to serialize JSON-RPC notification")
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
+        let data = encode_json_value(self, buf).expect("unable to serialize JSON-RPC notification");
+
+        EncodedMessage::new(MessageKind::JsonRpcNotification, data)
     }
 }
 
@@ -499,7 +508,7 @@ mod tests {
     use bytes::{Bytes, BytesMut};
     use serde_lite::{Deserialize, Serialize};
 
-    use crate::v3::msg::{DecodeMessage, EncodeMessage};
+    use crate::v3::msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind};
 
     use super::{
         JsonRpcError, JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest,
@@ -531,7 +540,7 @@ mod tests {
 
         let expected_json = r#"{"jsonrpc":"2.0","id":1,"method":"custom_method","params":{"foo":"hello","bar":42}}"#;
 
-        assert_eq!(encoded, expected_json.as_bytes());
+        assert_eq!(encoded.data(), expected_json.as_bytes());
     }
 
     #[test]
@@ -543,11 +552,13 @@ mod tests {
             bar: u32,
         }
 
-        let mut buf = Bytes::from(
+        let buf = Bytes::from(
             r#"{"jsonrpc":"2.0","id":1,"method":"custom_method","params":{"foo":"hello","bar":42}}"#,
         );
 
-        let decoded = JsonRpcRequest::decode(&mut buf).unwrap();
+        let encoded = EncodedMessage::new(MessageKind::JsonRpcRequest, buf);
+
+        let decoded = JsonRpcRequest::decode(&encoded).unwrap();
 
         assert_eq!(decoded.id(), 1);
 
@@ -587,7 +598,7 @@ mod tests {
         let expected_json =
             r#"{"jsonrpc":"2.0","method":"custom_method","params":{"foo":"hello","bar":42}}"#;
 
-        assert_eq!(encoded, expected_json.as_bytes());
+        assert_eq!(encoded.data(), expected_json.as_bytes());
     }
 
     #[test]
@@ -599,11 +610,13 @@ mod tests {
             bar: u32,
         }
 
-        let mut buf = Bytes::from(
+        let buf = Bytes::from(
             r#"{"jsonrpc":"2.0","method":"custom_method","params":{"foo":"hello","bar":42}}"#,
         );
 
-        let decoded = JsonRpcNotification::decode(&mut buf).unwrap();
+        let encoded = EncodedMessage::new(MessageKind::JsonRpcNotification, buf);
+
+        let decoded = JsonRpcNotification::decode(&encoded).unwrap();
 
         let (method, params) = decoded.deconstruct();
 
@@ -639,7 +652,7 @@ mod tests {
 
         let expected_json = r#"{"jsonrpc":"2.0","id":1,"result":{"foo":"hello","bar":42}}"#;
 
-        assert_eq!(encoded, expected_json.as_bytes());
+        assert_eq!(encoded.data(), expected_json.as_bytes());
     }
 
     #[test]
@@ -669,7 +682,7 @@ mod tests {
         let expected_json =
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":123,"message":"An error occurred"}}"#;
 
-        assert_eq!(encoded, expected_json.as_bytes());
+        assert_eq!(encoded.data(), expected_json.as_bytes());
 
         let data = custom_data.serialize().unwrap();
 
@@ -683,7 +696,7 @@ mod tests {
 
         let expected_json = r#"{"jsonrpc":"2.0","id":1,"error":{"code":123,"message":"An error occurred","data":{"foo":"hello","bar":42}}}"#;
 
-        assert_eq!(encoded, expected_json.as_bytes());
+        assert_eq!(encoded.data(), expected_json.as_bytes());
     }
 
     #[test]
@@ -695,9 +708,11 @@ mod tests {
             bar: u32,
         }
 
-        let mut buf = Bytes::from(r#"{"jsonrpc":"2.0","id":1,"result":{"foo":"hello","bar":42}}"#);
+        let buf = Bytes::from(r#"{"jsonrpc":"2.0","id":1,"result":{"foo":"hello","bar":42}}"#);
 
-        let decoded = JsonRpcResponse::decode(&mut buf).unwrap();
+        let encoded = EncodedMessage::new(MessageKind::JsonRpcResponse, buf);
+
+        let decoded = JsonRpcResponse::decode(&encoded).unwrap();
 
         match decoded {
             JsonRpcResponse::Success(resp) => {
@@ -721,11 +736,13 @@ mod tests {
             bar: u32,
         }
 
-        let mut buf = Bytes::from(
+        let buf = Bytes::from(
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":123,"message":"An error occurred"}}"#,
         );
 
-        let decoded = JsonRpcResponse::decode(&mut buf).unwrap();
+        let encoded = EncodedMessage::new(MessageKind::JsonRpcResponse, buf);
+
+        let decoded = JsonRpcResponse::decode(&encoded).unwrap();
 
         match decoded {
             JsonRpcResponse::Error(resp) => {
@@ -740,11 +757,13 @@ mod tests {
             _ => panic!("expected error response"),
         }
 
-        let mut buf = Bytes::from(
+        let buf = Bytes::from(
             r#"{"jsonrpc":"2.0","id":1,"error":{"code":123,"message":"An error occurred","data":{"foo":"hello","bar":42}}}"#,
         );
 
-        let decoded = JsonRpcResponse::decode(&mut buf).unwrap();
+        let encoded = EncodedMessage::new(MessageKind::JsonRpcResponse, buf);
+
+        let decoded = JsonRpcResponse::decode(&encoded).unwrap();
 
         match decoded {
             JsonRpcResponse::Error(resp) => {

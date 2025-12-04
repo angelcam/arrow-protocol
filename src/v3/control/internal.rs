@@ -7,20 +7,16 @@ use std::{
 use futures::{Sink, SinkExt, Stream, StreamExt, ready};
 use tokio::io::{AsyncRead, AsyncWrite};
 
-use crate::{
-    ClientId, ClientKey, MacAddr,
-    v3::{
-        connection::{Connection, PingPongHandler},
-        control::{
-            error::{ControlProtocolConnectionError, ControlProtocolError},
-            msg::ControlProtocolMessage,
-        },
-        error::Error,
-        msg::{
-            DecodeMessage, EncodeMessage, Message, MessageEncoder, MessageKind,
-            error::ErrorMessage, hello::ControlProtocolHelloMessage,
-            options::ControlProtocolOptions,
-        },
+use crate::v3::{
+    connection::{Connection, PingPongHandler},
+    control::{
+        error::{ControlProtocolConnectionError, ControlProtocolError},
+        msg::ControlProtocolMessage,
+    },
+    error::Error,
+    msg::{
+        DecodeMessage, EncodeMessage, MessageEncoder, MessageKind, error::ErrorMessage,
+        hello::ControlProtocolHelloMessage, options::ControlProtocolOptions,
     },
 };
 
@@ -62,19 +58,9 @@ impl InternalServerHandshake {
         }
     }
 
-    /// Get the client ID.
-    pub fn client_id(&self) -> &ClientId {
-        self.client_hello.client_id()
-    }
-
-    /// Get the client key.
-    pub fn client_key(&self) -> &ClientKey {
-        self.client_hello.client_key()
-    }
-
-    /// Get the client MAC address.
-    pub fn client_mac(&self) -> &MacAddr {
-        self.client_hello.client_mac()
+    /// Get the client hello message.
+    pub fn client_hello(&self) -> &ControlProtocolHelloMessage {
+        &self.client_hello
     }
 
     /// Accept the connection.
@@ -180,9 +166,7 @@ impl InternalConnectionBuilder {
     pub async fn connect<T>(
         self,
         io: T,
-        client_id: ClientId,
-        client_key: ClientKey,
-        client_mac: MacAddr,
+        hello: ControlProtocolHelloMessage,
     ) -> Result<InternalConnection, ControlProtocolConnectionError>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
@@ -204,8 +188,7 @@ impl InternalConnectionBuilder {
             self.max_local_concurrent_requests,
         );
 
-        res.client_handshake(client_id, client_key, client_mac, local_options)
-            .await?;
+        res.client_handshake(hello, local_options).await?;
 
         tokio::spawn(ping_pong_handler.run(self.ping_interval, self.pong_timeout));
 
@@ -234,14 +217,10 @@ impl InternalConnection {
     /// Perform the control protocol handshake.
     async fn client_handshake(
         &mut self,
-        client_id: ClientId,
-        client_key: ClientKey,
-        client_mac: MacAddr,
+        hello: ControlProtocolHelloMessage,
         local_options: ControlProtocolOptions,
     ) -> Result<(), ControlProtocolConnectionError> {
-        let res = self
-            .client_handshake_internal(client_id, client_key, client_mac, local_options)
-            .await;
+        let res = self.client_handshake_internal(hello, local_options).await;
 
         if let Err(err) = res.as_ref()
             && let Some(msg) = err.to_error_message()
@@ -259,13 +238,9 @@ impl InternalConnection {
     /// Perform the control protocol handshake.
     async fn client_handshake_internal(
         &mut self,
-        client_id: ClientId,
-        client_key: ClientKey,
-        client_mac: MacAddr,
+        hello: ControlProtocolHelloMessage,
         local_options: ControlProtocolOptions,
     ) -> Result<Option<ErrorMessage>, ControlProtocolError> {
-        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
-
         self.send_message(hello).await?;
 
         let response = self
@@ -355,19 +330,17 @@ impl InternalConnection {
             .and_then(|res| res)
             .map_err(ControlProtocolError::Other)?;
 
-        let data = msg.data();
-
         match msg.kind() {
             MessageKind::Error => {
                 // NOTE: We don't send any error message back here, as the
                 //   server is expected to close the connection after sending
                 //   the error message. That's why we convert the decoding
                 //   error into `ControlProtocolError::Other` here.
-                ErrorMessage::decode(&mut data.clone())
+                ErrorMessage::decode(&msg)
                     .map(ReadMessageResult::ErrorMessage)
                     .map_err(ControlProtocolError::Other)
             }
-            k if k == kind => T::decode(&mut data.clone())
+            k if k == kind => T::decode(&msg)
                 .map(ReadMessageResult::ExpectedMessage)
                 .map_err(ControlProtocolError::InvalidMessage),
             k => Err(ControlProtocolError::UnexpectedMessageType(k)),
@@ -377,7 +350,7 @@ impl InternalConnection {
     /// Send a given control protocol message.
     async fn send_message<T>(&mut self, msg: T) -> Result<(), ControlProtocolError>
     where
-        T: Message + EncodeMessage,
+        T: EncodeMessage,
     {
         self.inner
             .send(self.encoder.encode(&msg))
@@ -453,7 +426,10 @@ mod tests {
 
     use crate::{
         ClientId, MacAddr,
-        v3::utils::tests::{FakeIo, create_fake_io_input, create_fake_io_output},
+        v3::{
+            msg::hello::ControlProtocolHelloMessage,
+            utils::tests::{FakeIo, create_fake_io_input, create_fake_io_output},
+        },
     };
 
     use super::InternalConnection;
@@ -478,12 +454,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
         let connection = InternalConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(4)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, client_id, client_key, client_mac)
+            .connect(io, hello)
             .await
             .unwrap();
 
@@ -498,10 +476,12 @@ mod tests {
 
         let mut expected_hello = Vec::new();
 
-        expected_hello.extend_from_slice(&[0x03, 0x00, 0x00, 0x00, 0x00, 0x26]);
-        expected_hello.extend_from_slice(&[0xaa; 16]);
-        expected_hello.extend_from_slice(&[0xbb; 16]);
-        expected_hello.extend_from_slice(&[0xcc; 6]);
+        expected_hello.extend_from_slice(&[0x03, 0x00, 0x00, 0x00, 0x00, 0x2b]);
+        expected_hello.extend_from_slice(&[0xaa; 16]); // client ID
+        expected_hello.extend_from_slice(&[0xbb; 16]); // client key
+        expected_hello.extend_from_slice(&[0xcc; 6]); // client MAC
+        expected_hello.extend_from_slice(&[0u8; 4]); // flags
+        expected_hello.extend_from_slice(&[0u8]); // extended info
 
         assert_eq!(hello, &expected_hello);
 
@@ -536,12 +516,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
         InternalConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(4)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, client_id, client_key, client_mac)
+            .connect(io, hello)
             .await
             .err()
             .unwrap();
@@ -575,12 +557,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
         InternalConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(4)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, client_id, client_key, client_mac)
+            .connect(io, hello)
             .await
             .err()
             .unwrap();
@@ -616,12 +600,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
         InternalConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(4)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, client_id, client_key, client_mac)
+            .connect(io, hello)
             .await
             .err()
             .unwrap();

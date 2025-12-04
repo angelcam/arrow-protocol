@@ -1,9 +1,10 @@
 mod connection;
 mod control;
 mod error;
-mod msg;
 mod service;
 mod utils;
+
+pub mod msg;
 
 use std::{
     fmt::{self, Display, Formatter},
@@ -16,7 +17,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use self::{
     connection::Connection,
     msg::{
-        DecodeMessage, EncodeMessage, Message, MessageEncoder, MessageKind,
+        DecodeMessage, EncodeMessage, MessageEncoder, MessageKind,
         error::ErrorMessage,
         hello::{ControlProtocolHelloMessage, ServiceProtocolHelloMessage},
         options::{ControlProtocolOptions, ServiceProtocolOptions},
@@ -27,8 +28,9 @@ use crate::v3::error::Error;
 
 pub use self::{
     control::{
-        ControlProtocolConnection, ControlProtocolConnectionBuilder,
-        ControlProtocolConnectionError, ControlProtocolConnectionHandle, ControlProtocolHandshake,
+        ControlProtocolClientConnection, ControlProtocolClientConnectionHandle,
+        ControlProtocolConnectionBuilder, ControlProtocolConnectionError, ControlProtocolHandshake,
+        ControlProtocolServerConnection, ControlProtocolServerConnectionHandle,
         ControlProtocolService,
     },
     service::{
@@ -71,6 +73,18 @@ pub struct ArrowProtocolAcceptor {
 }
 
 impl ArrowProtocolAcceptor {
+    /// Create a new acceptor with default options.
+    pub fn new() -> Self {
+        Self {
+            encoder: MessageEncoder::new(),
+            max_rx_payload_size: 1 << 20,
+            max_local_concurrent_requests: 16,
+            rx_capacity: 1 << 16,
+            ping_interval: Duration::from_secs(20),
+            pong_timeout: Duration::from_secs(10),
+        }
+    }
+
     /// Set the maximum payload size for incoming messages.
     pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
         self.max_rx_payload_size = size;
@@ -168,26 +182,20 @@ impl ArrowProtocolAcceptor {
             .and_then(|res| res)
             .map_err(AcceptError::Other)?;
 
-        let data = msg.data();
-
         match msg.kind() {
-            MessageKind::ControlProtocolHello => {
-                ControlProtocolHelloMessage::decode(&mut data.clone())
-                    .map(ClientHelloMessage::Control)
-                    .map_err(AcceptError::InvalidMessage)
-            }
-            MessageKind::ServiceProtocolHello => {
-                ServiceProtocolHelloMessage::decode(&mut data.clone())
-                    .map(ClientHelloMessage::Service)
-                    .map_err(AcceptError::InvalidMessage)
-            }
+            MessageKind::ControlProtocolHello => ControlProtocolHelloMessage::decode(&msg)
+                .map(ClientHelloMessage::Control)
+                .map_err(AcceptError::InvalidMessage),
+            MessageKind::ServiceProtocolHello => ServiceProtocolHelloMessage::decode(&msg)
+                .map(ClientHelloMessage::Service)
+                .map_err(AcceptError::InvalidMessage),
             MessageKind::Error => {
                 // NOTE: We don't send any error message back here, as the
                 //   server is expected to close the connection after sending
                 //   the error message. That's why we return
                 //   `AcceptError::Other` here.
 
-                let err = ErrorMessage::decode(&mut data.clone())
+                let err = ErrorMessage::decode(&msg)
                     .map(|msg| Error::from_msg(format!("received error message: {msg}")))
                     .unwrap_or_else(|err| err);
 
@@ -204,12 +212,19 @@ impl ArrowProtocolAcceptor {
         msg: T,
     ) -> Result<(), AcceptError>
     where
-        T: Message + EncodeMessage,
+        T: EncodeMessage,
     {
         connection
             .send(self.encoder.encode(&msg))
             .await
             .map_err(AcceptError::Other)
+    }
+}
+
+impl Default for ArrowProtocolAcceptor {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
     }
 }
 

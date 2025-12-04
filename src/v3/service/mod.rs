@@ -97,21 +97,20 @@ impl ServiceProtocolConnectionBuilder {
     }
 
     /// Build the service connection.
-    pub async fn connect<T, U>(
+    pub async fn connect<T>(
         self,
         io: T,
-        access_token: U,
+        hello: ServiceProtocolHelloMessage,
     ) -> Result<ServiceProtocolConnection, Error>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
-        U: Into<String>,
     {
         let connection = InternalConnection::builder()
             .with_max_rx_payload_size(self.max_rx_payload_size)
             .with_rx_capacity(self.rx_capacity)
             .with_ping_interval(self.ping_interval)
             .with_pong_timeout(self.pong_timeout)
-            .connect(io, access_token)
+            .connect(io, hello)
             .await?;
 
         Ok(ServiceProtocolConnection::new(connection, self.rx_capacity))
@@ -148,9 +147,9 @@ impl ServiceProtocolHandshake {
         Self { inner, rx_capacity }
     }
 
-    /// Get the access token provided by the client.
-    pub fn access_token(&self) -> &str {
-        self.inner.access_token()
+    /// Get the client hello message.
+    pub fn client_hello(&self) -> &ServiceProtocolHelloMessage {
+        self.inner.client_hello()
     }
 
     /// Accept the connection.
@@ -327,7 +326,10 @@ mod tests {
     use futures::{SinkExt, StreamExt};
 
     use crate::v3::{
-        msg::raw::{RawDataAckMessage, RawDataMessage},
+        msg::{
+            hello::ServiceProtocolHelloMessage,
+            raw::{RawDataAckMessage, RawDataMessage},
+        },
         utils::tests::{
             EncodedMessageExt, FakeIo, MessageExt, create_fake_io_input, create_fake_io_output,
         },
@@ -368,7 +370,7 @@ mod tests {
             .with_rx_capacity(32)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, "foo")
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
             .await
             .unwrap();
 
@@ -456,7 +458,7 @@ mod tests {
             .with_rx_capacity(32)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, "foo")
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
             .await
             .unwrap();
 

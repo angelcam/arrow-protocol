@@ -1,5 +1,3 @@
-use bytes::Bytes;
-
 use crate::v3::{
     control::error::ControlProtocolError,
     msg::{
@@ -22,31 +20,23 @@ pub enum ControlProtocolMessage {
 impl ControlProtocolMessage {
     /// Decode a control protocol message.
     pub fn decode(msg: &EncodedMessage) -> Result<Self, ControlProtocolError> {
-        let data = msg.data();
-
         match msg.kind() {
-            MessageKind::JsonRpcRequest => {
-                Self::decode_message::<JsonRpcRequest>(&mut data.clone())
-            }
-            MessageKind::JsonRpcResponse => {
-                Self::decode_message::<JsonRpcResponse>(&mut data.clone())
-            }
-            MessageKind::JsonRpcNotification => {
-                Self::decode_message::<JsonRpcNotification>(&mut data.clone())
-            }
-            MessageKind::Error => Self::decode_message::<ErrorMessage>(&mut data.clone()),
-            MessageKind::Redirect => Self::decode_message::<RedirectMessage>(&mut data.clone()),
+            MessageKind::JsonRpcRequest => Self::decode_message::<JsonRpcRequest>(msg),
+            MessageKind::JsonRpcResponse => Self::decode_message::<JsonRpcResponse>(msg),
+            MessageKind::JsonRpcNotification => Self::decode_message::<JsonRpcNotification>(msg),
+            MessageKind::Error => Self::decode_message::<ErrorMessage>(msg),
+            MessageKind::Redirect => Self::decode_message::<RedirectMessage>(msg),
             _ => Err(ControlProtocolError::UnexpectedMessageType(msg.kind())),
         }
     }
 
     /// Decode a specific message type.
-    fn decode_message<T>(data: &mut Bytes) -> Result<Self, ControlProtocolError>
+    fn decode_message<T>(msg: &EncodedMessage) -> Result<Self, ControlProtocolError>
     where
         T: DecodeMessage,
         Self: From<T>,
     {
-        let msg = T::decode(data).map_err(ControlProtocolError::InvalidMessage)?;
+        let msg = T::decode(msg).map_err(ControlProtocolError::InvalidMessage)?;
 
         let res = Self::from(msg);
 

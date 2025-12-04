@@ -10,7 +10,7 @@ use std::fmt::{self, Display, Formatter};
 
 use bytes::{Bytes, BytesMut};
 
-use crate::v3::error::Error;
+use crate::v3::{PROTOCOL_VERSION, error::Error};
 
 /// Unknown message kind error.
 #[derive(Debug)]
@@ -73,16 +73,10 @@ impl TryFrom<u8> for MessageKind {
     }
 }
 
-/// Message trait.
-pub trait Message {
-    /// Get the message kind.
-    fn kind(&self) -> MessageKind;
-}
-
 /// Decode message trait.
 pub trait DecodeMessage {
     /// Decode the message.
-    fn decode(buf: &mut Bytes) -> Result<Self, Error>
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error>
     where
         Self: Sized;
 }
@@ -94,11 +88,12 @@ pub trait EncodeMessage {
     /// The method can use the provided buffer to serialize the payload. This
     /// will help with reducing the number of allocations. The buffer will
     /// always be empty when the method is called.
-    fn encode(&self, buf: &mut BytesMut) -> Bytes;
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage;
 }
 
 /// Encoded message.
 pub struct EncodedMessage {
+    protocol_version: u8,
     kind: MessageKind,
     payload: Bytes,
 }
@@ -108,7 +103,25 @@ impl EncodedMessage {
     pub const fn new(kind: MessageKind, payload: Bytes) -> Self {
         assert!(payload.len() <= (u32::MAX as usize));
 
-        Self { kind, payload }
+        Self::new_with_version(PROTOCOL_VERSION, kind, payload)
+    }
+
+    /// Create a new encoded message.
+    pub(crate) const fn new_with_version(
+        protocol_version: u8,
+        kind: MessageKind,
+        payload: Bytes,
+    ) -> Self {
+        Self {
+            protocol_version,
+            kind,
+            payload,
+        }
+    }
+
+    /// Get the protocol version.
+    pub fn protocol_version(&self) -> u8 {
+        self.protocol_version
     }
 
     /// Get the message kind.
@@ -123,6 +136,7 @@ impl EncodedMessage {
 }
 
 /// Message encoder.
+#[derive(Default)]
 pub struct MessageEncoder {
     buffer: BytesMut,
 }
@@ -138,14 +152,10 @@ impl MessageEncoder {
     /// Encode a given message.
     pub fn encode<P>(&mut self, payload: &P) -> EncodedMessage
     where
-        P: Message + EncodeMessage,
+        P: EncodeMessage,
     {
-        let kind = payload.kind();
-
         self.buffer.clear();
 
-        let payload = payload.encode(&mut self.buffer);
-
-        EncodedMessage::new(kind, payload)
+        payload.encode(&mut self.buffer)
     }
 }

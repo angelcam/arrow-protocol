@@ -7,11 +7,8 @@ use futures::channel::oneshot;
 
 use crate::v3::{
     control::{error::ControlProtocolError, msg::ControlProtocolMessage},
-    msg::{
-        error::ErrorMessage,
-        json::{
-            JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest, JsonRpcResponse,
-        },
+    msg::json::{
+        JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest, JsonRpcResponse,
     },
 };
 
@@ -176,49 +173,27 @@ impl ConnectionContext {
 
     /// Close the context.
     ///
-    /// This will clear all outgoing message queues and pending requests and
-    /// the outgoing message consumer will be notified that there will be no
-    /// more messages.
-    pub fn close(&mut self) {
+    /// This will clear all outgoing message queues and pending requests, put a
+    /// given bye message (if any) into the outgoing message queue and notify
+    /// the outgoing message consumer.
+    pub fn close(&mut self, bye: Option<ControlProtocolMessage>) {
         if self.closed {
             return;
         }
 
         self.closed = true;
 
-        // Once the connection is closed, we can't send any more messages and
-        // we won't receive anything either, so we might as well just drop all
-        // outgoing and pending requests, responses, notifications and the
-        // outgoing message queue.
+        // We need to stop sending any messages and send only the the bye
+        // message. The connection will be closed after that.
         self.pending_requests.clear();
         self.outgoing_requests.clear();
         self.outgoing_responses.clear();
         self.outgoing_notifications.clear();
         self.outgoing_messages.clear();
 
-        // We need to wake up the outgoing message consumer so that it can
-        // notice that the connection is closed.
-        self.notify_outgoing_message_consumer();
-    }
-
-    /// Send a given error message and close the context.
-    pub fn send_error_message(&mut self, error: ErrorMessage) {
-        if self.closed {
-            return;
+        if let Some(msg) = bye {
+            self.outgoing_messages.push_back(msg);
         }
-
-        self.closed = true;
-
-        // This is a connection-level error, so we need to stop sending any
-        // messages and send only the error message. The connection will be
-        // closed after that.
-        self.pending_requests.clear();
-        self.outgoing_requests.clear();
-        self.outgoing_responses.clear();
-        self.outgoing_notifications.clear();
-        self.outgoing_messages.clear();
-
-        self.outgoing_messages.push_back(error.into());
 
         self.notify_outgoing_message_consumer();
     }

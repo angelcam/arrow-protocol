@@ -153,7 +153,9 @@ impl Decoder for MessageCodec {
 
         let payload = buf.split_to(payload_size as usize);
 
-        Ok(Some(EncodedMessage::new(kind, payload.freeze())))
+        let res = EncodedMessage::new_with_version(header.version, kind, payload.freeze());
+
+        Ok(Some(res))
     }
 
     fn decode_eof(&mut self, src: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {

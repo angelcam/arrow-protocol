@@ -4,13 +4,18 @@ mod internal;
 mod msg;
 
 use std::{
+    ops::Deref,
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
 
-use futures::{Sink, Stream, StreamExt, stream::SplitStream};
+use futures::{
+    Sink, Stream, StreamExt,
+    stream::SplitStream,
+    stream::{AbortHandle, Abortable},
+};
 use serde_lite::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
 
@@ -21,20 +26,18 @@ use self::{
     msg::ControlProtocolMessage,
 };
 
-use crate::{
-    ClientId, ClientKey, MacAddr,
-    v3::{
-        connection::{Connection, PingPongHandler},
-        error::Error,
-        msg::{
-            error::ErrorMessage,
-            hello::ControlProtocolHelloMessage,
-            json::{
-                JsonRpcError, JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest,
-                JsonRpcResponse, JsonRpcValue,
-            },
-            options::ControlProtocolOptions,
+use crate::v3::{
+    connection::{Connection, PingPongHandler},
+    error::Error,
+    msg::{
+        error::ErrorMessage,
+        hello::ControlProtocolHelloMessage,
+        json::{
+            JsonRpcError, JsonRpcMethod, JsonRpcNotification, JsonRpcParams, JsonRpcRequest,
+            JsonRpcResponse, JsonRpcValue,
         },
+        options::ControlProtocolOptions,
+        redirect::RedirectMessage,
     },
 };
 
@@ -107,11 +110,9 @@ impl ControlProtocolConnectionBuilder {
     /// Connect using the provided IO stream.
     pub async fn connect<T>(
         self,
-        client_id: ClientId,
-        client_key: ClientKey,
-        client_mac: MacAddr,
         io: T,
-    ) -> Result<ControlProtocolConnection, ControlProtocolConnectionError>
+        hello: ControlProtocolHelloMessage,
+    ) -> Result<ControlProtocolClientConnection, ControlProtocolConnectionError>
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
     {
@@ -120,10 +121,11 @@ impl ControlProtocolConnectionBuilder {
             .with_max_local_concurrent_requests(self.max_local_concurrent_requests)
             .with_ping_interval(self.ping_interval)
             .with_pong_timeout(self.pong_timeout)
-            .connect(io, client_id, client_key, client_mac)
+            .connect(io, hello)
             .await?;
 
-        let res = ControlProtocolConnection::new(connection, self.max_local_concurrent_requests);
+        let res =
+            ControlProtocolClientConnection::new(connection, self.max_local_concurrent_requests);
 
         Ok(res)
     }
@@ -162,68 +164,38 @@ impl ControlProtocolHandshake {
         }
     }
 
-    /// Get the client ID.
-    pub fn client_id(&self) -> &ClientId {
-        self.inner.client_id()
-    }
-
-    /// Get the client key.
-    pub fn client_key(&self) -> &ClientKey {
-        self.inner.client_key()
-    }
-
-    /// Get the client MAC address.
-    pub fn client_mac(&self) -> &MacAddr {
-        self.inner.client_mac()
+    /// Get the client hello message.
+    pub fn client_hello(&self) -> &ControlProtocolHelloMessage {
+        self.inner.client_hello()
     }
 
     /// Accept the connection.
-    pub async fn accept(self) -> Result<ControlProtocolConnection, Error> {
+    pub async fn accept(self) -> Result<ControlProtocolServerConnection, Error> {
         let connection = self.inner.accept().await?;
 
-        let res = ControlProtocolConnection::new(connection, self.max_local_concurrent_requests);
+        let res =
+            ControlProtocolServerConnection::new(connection, self.max_local_concurrent_requests);
 
         Ok(res)
     }
 
-    /// Reject the connection as unauthorized.
-    pub async fn unauthorized(self) -> Result<(), Error> {
-        self.inner.reject(ErrorMessage::Unauthorized).await
+    /// Reject the connection with a given error.
+    pub async fn reject(self, msg: ErrorMessage) -> Result<(), Error> {
+        self.inner.reject(msg).await
     }
 }
 
-/// Control protocol connection.
-pub struct ControlProtocolConnection {
-    rx: SplitStream<InternalConnection>,
-    context: Arc<Mutex<ConnectionContext>>,
+/// Control protocol client connection.
+pub struct ControlProtocolClientConnection {
+    inner: ControlProtocolConnection,
 }
 
-impl ControlProtocolConnection {
-    /// Create a new control protocol connection.
+impl ControlProtocolClientConnection {
+    /// Create a new control protocol client connection.
     fn new(connection: InternalConnection, max_local_concurrent_requests: u16) -> Self {
-        let max_local_concurrent_requests = max_local_concurrent_requests as usize;
-
-        let max_remote_concurrent_requests =
-            connection.remote_options().max_concurrent_requests() as usize;
-
-        let context = ConnectionContext::new(
-            max_local_concurrent_requests,
-            max_remote_concurrent_requests,
-        );
-
-        let (tx, rx) = connection.split();
-
-        let context = Arc::new(Mutex::new(context));
-
-        let message_sender = OutgoingMessageSender {
-            context: context.clone(),
-        };
-
-        // TERMINATION: The task will be terminated when all outgoing messages
-        //   have been sent.
-        tokio::spawn(message_sender.send_all(tx));
-
-        Self { rx, context }
+        Self {
+            inner: ControlProtocolConnection::new(connection, max_local_concurrent_requests),
+        }
     }
 
     /// Get a control protocol connection builder.
@@ -232,9 +204,9 @@ impl ControlProtocolConnection {
     }
 
     /// Get a control protocol connection handle.
-    pub fn handle(&self) -> ControlProtocolConnectionHandle {
-        ControlProtocolConnectionHandle {
-            context: self.context.clone(),
+    pub fn handle(&self) -> ControlProtocolClientConnectionHandle {
+        ControlProtocolClientConnectionHandle {
+            inner: self.inner.handle(),
         }
     }
 
@@ -252,6 +224,120 @@ impl ControlProtocolConnection {
     where
         T: ControlProtocolService + Send + Clone + 'static,
     {
+        self.inner
+            .process_incoming_messages(local_service)
+            .await?
+            .ok_or_else(|| {
+                ControlProtocolConnectionError::Other(Error::from_static_msg("connection lost"))
+            })
+    }
+}
+
+/// Control protocol server connection.
+pub struct ControlProtocolServerConnection {
+    inner: ControlProtocolConnection,
+}
+
+impl ControlProtocolServerConnection {
+    /// Create a new control protocol server connection.
+    fn new(connection: InternalConnection, max_local_concurrent_requests: u16) -> Self {
+        Self {
+            inner: ControlProtocolConnection::new(connection, max_local_concurrent_requests),
+        }
+    }
+
+    /// Get a control protocol connection builder.
+    pub const fn builder() -> ControlProtocolConnectionBuilder {
+        ControlProtocolConnectionBuilder::new()
+    }
+
+    /// Get a control protocol connection handle.
+    pub fn handle(&self) -> ControlProtocolServerConnectionHandle {
+        ControlProtocolServerConnectionHandle {
+            inner: self.inner.handle(),
+        }
+    }
+
+    /// Process incoming messages.
+    ///
+    /// This method must be run to drive the connection, process incoming
+    /// messages and dispatch them to the provided local service. The method
+    /// must be run even if the service does nothing. The method returns when
+    /// a redirect message is received or when an error occurs. The redirection
+    /// target is returned on success.
+    pub async fn process_incoming_messages<T>(
+        self,
+        local_service: T,
+    ) -> Result<(), ControlProtocolConnectionError>
+    where
+        T: ControlProtocolService + Send + Clone + 'static,
+    {
+        self.inner
+            .process_incoming_messages(local_service)
+            .await
+            .map(|_| ())
+    }
+}
+
+/// Control protocol connection.
+struct ControlProtocolConnection {
+    rx: IncomingMessageStream<SplitStream<InternalConnection>>,
+    context: Arc<Mutex<ConnectionContext>>,
+    abort: AbortHandle,
+}
+
+impl ControlProtocolConnection {
+    /// Create a new control protocol client connection.
+    fn new(connection: InternalConnection, max_local_concurrent_requests: u16) -> Self {
+        let max_local_concurrent_requests = max_local_concurrent_requests as usize;
+
+        let max_remote_concurrent_requests =
+            connection.remote_options().max_concurrent_requests() as usize;
+
+        let context = ConnectionContext::new(
+            max_local_concurrent_requests,
+            max_remote_concurrent_requests,
+        );
+
+        let context = Arc::new(Mutex::new(context));
+
+        let (tx, rx) = connection.split();
+
+        let (rx, abort) = IncomingMessageStream::new(rx, context.clone());
+
+        let message_sender = OutgoingMessageSender {
+            context: context.clone(),
+        };
+
+        // TERMINATION: The task will be terminated when all outgoing messages
+        //   have been sent.
+        tokio::spawn(message_sender.send_all(tx));
+
+        Self { rx, context, abort }
+    }
+
+    /// Get a control protocol connection handle.
+    fn handle(&self) -> ControlProtocolConnectionHandle {
+        ControlProtocolConnectionHandle {
+            context: self.context.clone(),
+            abort: self.abort.clone(),
+        }
+    }
+
+    /// Process incoming messages.
+    ///
+    /// This method must be run to drive the connection, process incoming
+    /// messages and dispatch them to the provided local service. The method
+    /// must be run even if the service does nothing. The method returns when
+    /// a redirect message is received, when the connection is closed or when
+    /// an error occurs. The redirection target is returned on success.
+    async fn process_incoming_messages<T>(
+        self,
+        local_service: T,
+    ) -> Result<Option<String>, ControlProtocolConnectionError>
+    where
+        T: ControlProtocolService + Send + Clone + 'static,
+    {
         let message_reader = IncomingMessageReader {
             context: self.context,
             service: local_service,
@@ -261,19 +347,87 @@ impl ControlProtocolConnection {
     }
 }
 
+/// Control protocol client connection handle.
+#[derive(Clone)]
+pub struct ControlProtocolClientConnectionHandle {
+    inner: ControlProtocolConnectionHandle,
+}
+
+impl ControlProtocolClientConnectionHandle {
+    /// Send a given JSON-RPC request to the remote peer.
+    pub async fn send_request<M, T>(&self, method: M, params: T) -> Result<JsonRpcResponse, Error>
+    where
+        M: Into<JsonRpcMethod>,
+        T: Serialize,
+    {
+        self.inner.send_request(method, params).await
+    }
+
+    /// Send a given JSON-RPC notification to the remote peer.
+    pub async fn send_notification<M, T>(&self, method: M, params: T) -> Result<(), Error>
+    where
+        M: Into<JsonRpcMethod>,
+        T: Serialize,
+    {
+        self.inner.send_notification(method, params).await
+    }
+}
+
+/// Control protocol server connection handle.
+#[derive(Clone)]
+pub struct ControlProtocolServerConnectionHandle {
+    inner: ControlProtocolConnectionHandle,
+}
+
+impl ControlProtocolServerConnectionHandle {
+    /// Send a given JSON-RPC request to the remote peer.
+    pub async fn send_request<M, T>(&self, method: M, params: T) -> Result<JsonRpcResponse, Error>
+    where
+        M: Into<JsonRpcMethod>,
+        T: Serialize,
+    {
+        self.inner.send_request(method, params).await
+    }
+
+    /// Send a given JSON-RPC notification to the remote peer.
+    pub async fn send_notification<M, T>(&self, method: M, params: T) -> Result<(), Error>
+    where
+        M: Into<JsonRpcMethod>,
+        T: Serialize,
+    {
+        self.inner.send_notification(method, params).await
+    }
+
+    /// Close the connection.
+    ///
+    /// # Arguments
+    /// * `error` - optional error message to be sent before closing the
+    ///   connection
+    pub fn close(&self, error: Option<ErrorMessage>) {
+        self.inner.close(error.map(ControlProtocolMessage::from));
+    }
+
+    /// Redirect the client to a different server.
+    pub fn redirect<T>(&self, target: T)
+    where
+        T: Into<String>,
+    {
+        let msg = RedirectMessage::new(target);
+
+        self.inner.close(Some(msg.into()));
+    }
+}
+
 /// Control protocol connection handle.
 #[derive(Clone)]
-pub struct ControlProtocolConnectionHandle {
+struct ControlProtocolConnectionHandle {
     context: Arc<Mutex<ConnectionContext>>,
+    abort: AbortHandle,
 }
 
 impl ControlProtocolConnectionHandle {
     /// Send a given JSON-RPC request to the remote peer.
-    pub async fn send_request<M, T>(
-        &mut self,
-        method: M,
-        params: T,
-    ) -> Result<JsonRpcResponse, Error>
+    async fn send_request<M, T>(&self, method: M, params: T) -> Result<JsonRpcResponse, Error>
     where
         M: Into<JsonRpcMethod>,
         T: Serialize,
@@ -291,7 +445,7 @@ impl ControlProtocolConnectionHandle {
     }
 
     /// Send a given JSON-RPC notification to the remote peer.
-    pub async fn send_notification<M, T>(&mut self, method: M, params: T) -> Result<(), Error>
+    async fn send_notification<M, T>(&self, method: M, params: T) -> Result<(), Error>
     where
         M: Into<JsonRpcMethod>,
         T: Serialize,
@@ -309,6 +463,18 @@ impl ControlProtocolConnectionHandle {
 
         rx.await
             .map_err(|_| Error::from_static_msg("connection closed"))
+    }
+
+    /// Close the connection.
+    ///
+    /// # Arguments
+    /// * `msg` - optional message to be sent before closing the connection
+    fn close(&self, msg: Option<ControlProtocolMessage>) {
+        // abort the incoming message stream
+        self.abort.abort();
+
+        // ... and close the context
+        self.context.lock().unwrap().close(msg);
     }
 }
 
@@ -362,6 +528,70 @@ impl OutgoingMessageSender {
     }
 }
 
+pin_project_lite::pin_project! {
+    /// Incoming message stream.
+    struct IncomingMessageStream<T> {
+        #[pin]
+        inner: Abortable<T>,
+        context: ConnectionContextDropGuard,
+    }
+}
+
+impl<T> IncomingMessageStream<T>
+where
+    T: Stream,
+{
+    /// Create a new incoming message stream.
+    fn new(stream: T, context: Arc<Mutex<ConnectionContext>>) -> (Self, AbortHandle) {
+        let (inner, abort) = futures::stream::abortable(stream);
+
+        let res = Self {
+            inner,
+            context: context.into(),
+        };
+
+        (res, abort)
+    }
+}
+
+impl<T> Stream for IncomingMessageStream<T>
+where
+    T: Stream,
+{
+    type Item = T::Item;
+
+    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut this = self.project();
+
+        this.inner.poll_next_unpin(cx)
+    }
+}
+
+/// Close the context on drop.
+struct ConnectionContextDropGuard {
+    context: Arc<Mutex<ConnectionContext>>,
+}
+
+impl Drop for ConnectionContextDropGuard {
+    fn drop(&mut self) {
+        self.context.lock().unwrap().close(None);
+    }
+}
+
+impl Deref for ConnectionContextDropGuard {
+    type Target = Arc<Mutex<ConnectionContext>>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.context
+    }
+}
+
+impl From<Arc<Mutex<ConnectionContext>>> for ConnectionContextDropGuard {
+    fn from(context: Arc<Mutex<ConnectionContext>>) -> Self {
+        Self { context }
+    }
+}
+
 /// Incoming message reader.
 struct IncomingMessageReader<T> {
     context: Arc<Mutex<ConnectionContext>>,
@@ -373,7 +603,7 @@ where
     T: ControlProtocolService + Send + Clone + 'static,
 {
     /// Read and process all incoming messages.
-    async fn read_all<S>(self, rx: S) -> Result<String, ControlProtocolConnectionError>
+    async fn read_all<S>(self, rx: S) -> Result<Option<String>, ControlProtocolConnectionError>
     where
         S: Stream<Item = Result<ControlProtocolMessage, ControlProtocolError>>,
     {
@@ -392,23 +622,19 @@ where
                         self.process_json_rpc_notification(notification)
                     }
                     ControlProtocolMessage::Redirect(redirect) => {
-                        return Ok(redirect.into_target());
+                        return Ok(Some(redirect.into_target()));
                     }
                     ControlProtocolMessage::Error(err) => {
                         return Err(err.into());
                     }
                 },
                 Some(Err(err)) => Err(err),
-                None => {
-                    return Err(ControlProtocolConnectionError::Other(
-                        Error::from_static_msg("connection lost"),
-                    ));
-                }
+                None => return Ok(None),
             };
 
             if let Err(err) = res {
                 if let Some(msg) = err.to_error_message() {
-                    self.context.lock().unwrap().send_error_message(msg);
+                    self.context.lock().unwrap().close(Some(msg.into()));
                 }
 
                 return Err(err.into());
@@ -479,12 +705,6 @@ where
     }
 }
 
-impl<T> Drop for IncomingMessageReader<T> {
-    fn drop(&mut self) {
-        self.context.lock().unwrap().close();
-    }
-}
-
 /// Incoming request token.
 ///
 /// The token can be used as a handle to send back a response for the
@@ -515,9 +735,12 @@ mod tests {
     use crate::{
         ClientId, MacAddr,
         v3::{
-            msg::json::{
-                JsonRpcError, JsonRpcMethod, JsonRpcParams, JsonRpcRequest, JsonRpcResponse,
-                JsonRpcValue,
+            msg::{
+                hello::ControlProtocolHelloMessage,
+                json::{
+                    JsonRpcError, JsonRpcMethod, JsonRpcParams, JsonRpcRequest, JsonRpcResponse,
+                    JsonRpcValue,
+                },
             },
             utils::tests::{
                 EncodedMessageExt, FakeIo, MessageExt, create_fake_io_input, create_fake_io_output,
@@ -525,7 +748,7 @@ mod tests {
         },
     };
 
-    use super::{ControlProtocolConnection, ControlProtocolError, ControlProtocolService};
+    use super::{ControlProtocolClientConnection, ControlProtocolError, ControlProtocolService};
 
     /// Helper type.
     #[derive(Clone)]
@@ -591,12 +814,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
-        let target = ControlProtocolConnection::builder()
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
+        let target = ControlProtocolClientConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(4)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(client_id, client_key, client_mac, io)
+            .connect(io, hello)
             .await
             .unwrap()
             .process_incoming_messages(DummyLocalService)
@@ -635,12 +860,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
-        let err = ControlProtocolConnection::builder()
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
+        let err = ControlProtocolClientConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(4)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(client_id, client_key, client_mac, io)
+            .connect(io, hello)
             .await
             .unwrap()
             .process_incoming_messages(DummyLocalService)
@@ -704,12 +931,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
-        let err = ControlProtocolConnection::builder()
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
+        let err = ControlProtocolClientConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(2)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(client_id, client_key, client_mac, io)
+            .connect(io, hello)
             .await
             .unwrap()
             .process_incoming_messages(DummyLocalService)
@@ -765,12 +994,14 @@ mod tests {
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
 
-        let connection = ControlProtocolConnection::builder()
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
+        let connection = ControlProtocolClientConnection::builder()
             .with_max_rx_payload_size(1024)
             .with_max_local_concurrent_requests(2)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
-            .connect(client_id, client_key, client_mac, io)
+            .connect(io, hello)
             .await
             .unwrap();
 
@@ -784,7 +1015,7 @@ mod tests {
 
         let responses = (0..8)
             .map(|_| {
-                let mut handle = handle.clone();
+                let handle = handle.clone();
 
                 tokio::spawn(async move { handle.send_request("test_method", RequestParams).await })
             })

@@ -1,8 +1,8 @@
-use bytes::{Buf, BufMut, Bytes, BytesMut};
+use bytes::{Buf, BufMut, BytesMut};
 
 use crate::v3::{
     error::Error,
-    msg::{DecodeMessage, EncodeMessage, Message, MessageKind},
+    msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
 };
 
 /// Ping message.
@@ -22,14 +22,14 @@ impl PingMessage {
     }
 }
 
-impl Message for PingMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::Ping
-    }
-}
-
 impl DecodeMessage for PingMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::Ping);
+
+        let data = encoded.data();
+
+        let mut buf = data.clone();
+
         if buf.len() < std::mem::size_of::<u16>() {
             return Err(Error::from_static_msg("PING message too short"));
         }
@@ -41,12 +41,12 @@ impl DecodeMessage for PingMessage {
 }
 
 impl EncodeMessage for PingMessage {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         buf.put_u16(self.id);
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::Ping, data.freeze())
     }
 }
 
@@ -67,14 +67,14 @@ impl PongMessage {
     }
 }
 
-impl Message for PongMessage {
-    fn kind(&self) -> MessageKind {
-        MessageKind::Pong
-    }
-}
-
 impl DecodeMessage for PongMessage {
-    fn decode(buf: &mut Bytes) -> Result<Self, Error> {
+    fn decode(encoded: &EncodedMessage) -> Result<Self, Error> {
+        assert_eq!(encoded.kind(), MessageKind::Pong);
+
+        let data = encoded.data();
+
+        let mut buf = data.clone();
+
         if buf.len() < std::mem::size_of::<u16>() {
             return Err(Error::from_static_msg("PONG message too short"));
         }
@@ -86,11 +86,11 @@ impl DecodeMessage for PongMessage {
 }
 
 impl EncodeMessage for PongMessage {
-    fn encode(&self, buf: &mut BytesMut) -> Bytes {
+    fn encode(&self, buf: &mut BytesMut) -> EncodedMessage {
         buf.put_u16(self.id);
 
         let data = buf.split();
 
-        data.freeze()
+        EncodedMessage::new(MessageKind::Pong, data.freeze())
     }
 }
