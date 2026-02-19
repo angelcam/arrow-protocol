@@ -10,19 +10,6 @@ use bytes::{
     buf::{Buf, BufMut, Take},
 };
 
-/// Trait for types that can be represented as a slice of bytes.
-pub trait AsBytes: Sized + Copy {
-    /// Get this value as a slice of bytes.
-    fn as_bytes(&self) -> &[u8] {
-        unsafe { std::slice::from_raw_parts(self as *const _ as *const u8, self.size()) }
-    }
-
-    /// Get size of this value in bytes.
-    fn size(&self) -> usize {
-        std::mem::size_of::<Self>()
-    }
-}
-
 /// Unexpected EOF.
 #[derive(Debug, Copy, Clone)]
 pub struct UnexpectedEof;
@@ -34,22 +21,6 @@ impl Display for UnexpectedEof {
 }
 
 impl Error for UnexpectedEof {}
-
-/// Trait for types that can be read directly from a slice of bytes.
-pub trait FromBytes: Sized + Copy {
-    /// Get a reference to `Self` from a given slice of bytes.
-    ///
-    /// Note that this method does not copy anything.
-    fn from_bytes(data: &[u8]) -> Result<&Self, UnexpectedEof> {
-        if data.len() < std::mem::size_of::<Self>() {
-            return Err(UnexpectedEof);
-        }
-
-        let res = unsafe { &*(data.as_ptr() as *const _ as *const Self) };
-
-        Ok(res)
-    }
-}
 
 /// Trait for types that can be encoded as a series of bytes.
 pub trait Encode {

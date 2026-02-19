@@ -9,12 +9,16 @@ use std::{
 };
 
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::U16,
+};
 
 use crate::{
     MacAddr,
     v2::{
         msg::control::DecodingError,
-        utils::{AsBytes, Decode, Encode, FromBytes, net::IpAddrExt},
+        utils::{Decode, Encode, UnexpectedEof, net::IpAddrExt},
     },
 };
 
@@ -151,9 +155,11 @@ impl Decode for ServiceRecord {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let header = RawRecordHeader::from_bytes(data.as_ref())?;
+        let (header, _) = RawRecordHeader::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
-        let header_len = header.size();
+        let header_len = std::mem::size_of::<RawRecordHeader>();
 
         let rest = &data.as_ref()[header_len..];
 
@@ -165,8 +171,8 @@ impl Decode for ServiceRecord {
         let path = std::str::from_utf8(&rest[..path_len])
             .map_err(|_| DecodingError::invalid_data("service path is not UTF-8 encoded"))?;
 
-        let service_id = u16::from_be(header.service_id);
-        let service_type = ServiceType::try_from(u16::from_be(header.service_type))?;
+        let service_id = header.service_id.get();
+        let service_type = ServiceType::try_from(header.service_type.get())?;
 
         let res = if service_type == ServiceType::ControlProtocol {
             Self {
@@ -183,7 +189,7 @@ impl Decode for ServiceRecord {
                 service_type,
                 mac_address: header.mac_address.into(),
                 ip_address: IpAddr::decode(header.ip_version, header.ip_address)?,
-                port: u16::from_be(header.port),
+                port: header.port.get(),
                 path: path.to_string(),
             }
         };
@@ -202,12 +208,12 @@ impl Encode for ServiceRecord {
         let service_type = self.service_type as u16;
 
         let header = RawRecordHeader {
-            service_id: self.service_id.to_be(),
-            service_type: service_type.to_be(),
+            service_id: U16::new(self.service_id),
+            service_type: U16::new(service_type),
             mac_address: self.mac_address.into_array(),
             ip_version: self.ip_address.version(),
             ip_address: self.ip_address.encode(),
-            port: self.port.to_be(),
+            port: U16::new(self.port),
         };
 
         buf.put_slice(header.as_bytes());
@@ -222,19 +228,16 @@ impl Encode for ServiceRecord {
 }
 
 /// Service record header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawRecordHeader {
-    service_id: u16,
-    service_type: u16,
+    service_id: U16,
+    service_type: U16,
     mac_address: [u8; 6],
     ip_version: u8,
     ip_address: [u8; 16],
-    port: u16,
+    port: U16,
 }
-
-impl AsBytes for RawRecordHeader {}
-impl FromBytes for RawRecordHeader {}
 
 /// Service table.
 #[derive(Clone)]

@@ -1,8 +1,12 @@
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::{U16, U32},
+};
 
 use crate::v2::{
     msg::control::DecodingError,
-    utils::{AsBytes, Decode, Encode, FromBytes},
+    utils::{Decode, Encode, UnexpectedEof},
 };
 
 /// CONNECT message payload.
@@ -45,14 +49,16 @@ impl Decode for ConnectMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let raw = RawMessage::from_bytes(data.as_ref())?;
+        let (raw, _) = RawMessage::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
         let res = Self {
-            service_id: u16::from_be(raw.service_id),
-            session_id: u32::from_be(raw.session_id) & 0x00ffffff,
+            service_id: raw.service_id.get(),
+            session_id: raw.session_id.get() & 0x00ffffff,
         };
 
-        data.advance(raw.size());
+        data.advance(std::mem::size_of::<RawMessage>());
 
         Ok(res)
     }
@@ -64,8 +70,8 @@ impl Encode for ConnectMessage {
         B: BufMut,
     {
         let raw = RawMessage {
-            service_id: self.service_id.to_be(),
-            session_id: self.session_id.to_be(),
+            service_id: U16::new(self.service_id),
+            session_id: U32::new(self.session_id),
         };
 
         buf.put_slice(raw.as_bytes());
@@ -78,12 +84,9 @@ impl Encode for ConnectMessage {
 }
 
 /// Raw CONNECT message.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessage {
-    service_id: u16,
-    session_id: u32,
+    service_id: U16,
+    session_id: U32,
 }
-
-impl AsBytes for RawMessage {}
-impl FromBytes for RawMessage {}

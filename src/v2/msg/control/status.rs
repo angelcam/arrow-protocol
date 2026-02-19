@@ -1,8 +1,12 @@
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::{U16, U32},
+};
 
 use crate::v2::{
     msg::control::DecodingError,
-    utils::{AsBytes, Decode, Encode, FromBytes},
+    utils::{Decode, Encode, UnexpectedEof},
 };
 
 /// Status message payload.
@@ -52,15 +56,17 @@ impl Decode for StatusMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let raw = RawMessage::from_bytes(data.as_ref())?;
+        let (raw, _) = RawMessage::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
         let res = Self {
-            request_id: u16::from_be(raw.request_id),
-            status_flags: u32::from_be(raw.status_flags),
-            active_sessions: u32::from_be(raw.active_sessions),
+            request_id: raw.request_id.get(),
+            status_flags: raw.status_flags.get(),
+            active_sessions: raw.active_sessions.get(),
         };
 
-        data.advance(raw.size());
+        data.advance(std::mem::size_of::<RawMessage>());
 
         Ok(res)
     }
@@ -72,9 +78,9 @@ impl Encode for StatusMessage {
         B: BufMut,
     {
         let raw = RawMessage {
-            request_id: self.request_id.to_be(),
-            status_flags: self.status_flags.to_be(),
-            active_sessions: self.active_sessions.to_be(),
+            request_id: U16::new(self.request_id),
+            status_flags: U32::new(self.status_flags),
+            active_sessions: U32::new(self.active_sessions),
         };
 
         buf.put_slice(raw.as_bytes())
@@ -87,13 +93,10 @@ impl Encode for StatusMessage {
 }
 
 /// Status message header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessage {
-    request_id: u16,
-    status_flags: u32,
-    active_sessions: u32,
+    request_id: U16,
+    status_flags: U32,
+    active_sessions: U32,
 }
-
-impl AsBytes for RawMessage {}
-impl FromBytes for RawMessage {}

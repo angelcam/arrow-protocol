@@ -1,8 +1,12 @@
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::U32,
+};
 
 use crate::v2::{
     msg::control::DecodingError,
-    utils::{AsBytes, Decode, Encode, FromBytes},
+    utils::{Decode, Encode, UnexpectedEof},
 };
 
 /// HUP message payload.
@@ -47,14 +51,16 @@ impl Decode for HupMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let raw = RawMessage::from_bytes(data.as_ref())?;
+        let (raw, _) = RawMessage::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
         let res = Self {
-            session_id: u32::from_be(raw.session_id) & 0x00ffffff,
-            error_code: u32::from_be(raw.error_code),
+            session_id: raw.session_id.get() & 0x00ffffff,
+            error_code: raw.error_code.get(),
         };
 
-        data.advance(raw.size());
+        data.advance(std::mem::size_of::<RawMessage>());
 
         Ok(res)
     }
@@ -66,8 +72,8 @@ impl Encode for HupMessage {
         B: BufMut,
     {
         let raw = RawMessage {
-            session_id: self.session_id.to_be(),
-            error_code: self.error_code.to_be(),
+            session_id: U32::new(self.session_id),
+            error_code: U32::new(self.error_code),
         };
 
         buf.put_slice(raw.as_bytes());
@@ -80,12 +86,9 @@ impl Encode for HupMessage {
 }
 
 /// Raw HUP message.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessage {
-    session_id: u32,
-    error_code: u32,
+    session_id: U32,
+    error_code: U32,
 }
-
-impl AsBytes for RawMessage {}
-impl FromBytes for RawMessage {}

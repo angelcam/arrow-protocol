@@ -1,10 +1,14 @@
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::{U16, U32},
+};
 
 use crate::{
     ClientId, ClientKey, MacAddr,
     v2::{
         msg::control::{DecodingError, svc_table::ServiceTable},
-        utils::{AsBytes, Decode, DecodeWithContext, Encode, FromBytes},
+        utils::{Decode, DecodeWithContext, Encode, UnexpectedEof},
     },
 };
 
@@ -143,13 +147,15 @@ impl RegisterMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let header = RawMessageHeader::from_bytes(data.as_ref())?;
+        let (header, _) = RawMessageHeader::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
         let client_id = ClientId::from_bytes(header.uuid);
         let mac_address = header.mac_address.into();
         let client_key = header.key;
 
-        data.advance(header.size());
+        data.advance(std::mem::size_of::<RawMessageHeader>());
 
         let res = Self {
             version: MessageVersion::V1,
@@ -170,15 +176,17 @@ impl RegisterMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let header = RawMessageHeaderV2::from_bytes(data.as_ref())?;
+        let (header, _) = RawMessageHeaderV2::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
         let client_id = ClientId::from_bytes(header.uuid);
         let client_key = header.key;
         let mac_address = header.mac_address.into();
-        let window_size = u16::from_be(header.window_size);
-        let flags = u32::from_be(header.flags);
+        let window_size = header.window_size.get();
+        let flags = header.flags.get();
 
-        data.advance(header.size());
+        data.advance(std::mem::size_of::<RawMessageHeaderV2>());
 
         let pos = data
             .as_ref()
@@ -235,8 +243,8 @@ impl RegisterMessage {
             uuid: self.client_id.into_bytes(),
             key: self.client_key,
             mac_address: self.mac_address.into_array(),
-            window_size: self.window_size.to_be(),
-            flags: self.flags.to_be(),
+            window_size: U16::new(self.window_size),
+            flags: U32::new(self.flags),
         };
 
         buf.put_slice(header.as_bytes());
@@ -299,27 +307,21 @@ enum MessageVersion {
 }
 
 /// Register message header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessageHeader {
     uuid: [u8; 16],
     mac_address: [u8; 6],
     key: [u8; 16],
 }
 
-impl AsBytes for RawMessageHeader {}
-impl FromBytes for RawMessageHeader {}
-
 /// Register message header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessageHeaderV2 {
     uuid: [u8; 16],
     key: [u8; 16],
     mac_address: [u8; 6],
-    window_size: u16,
-    flags: u32,
+    window_size: U16,
+    flags: U32,
 }
-
-impl AsBytes for RawMessageHeaderV2 {}
-impl FromBytes for RawMessageHeaderV2 {}

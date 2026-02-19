@@ -1,6 +1,10 @@
 //! Hello message definitions.
 
 use bytes::{Buf, BytesMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::U32,
+};
 
 use crate::{
     ClientId, ClientKey, MacAddr,
@@ -8,7 +12,6 @@ use crate::{
         PROTOCOL_VERSION,
         error::Error,
         msg::{DecodeMessage, EncodeMessage, EncodedMessage, MessageKind},
-        utils::{AsBytes, FromBytes},
     },
 };
 
@@ -100,35 +103,29 @@ impl DecodeMessage for ControlProtocolHelloMessage {
 
         let mut buf = data.clone();
 
-        let size = std::mem::size_of::<RawControlProtocolHelloMessage>();
+        let (raw, _) = RawControlProtocolHelloMessage::ref_from_prefix(&buf)
+            .map_err(SizeError::from)
+            .map_err(|_| Error::from_static_msg("control protocol hello message too short"))?;
 
-        if buf.len() < size {
-            return Err(Error::from_static_msg(
-                "control protocol hello message too short",
-            ));
-        }
+        let mut res = Self {
+            protocol_version: encoded.protocol_version(),
+            client_id: ClientId::from_bytes(raw.client_id),
+            client_key: raw.client_key,
+            client_mac: MacAddr::from(raw.client_mac),
+            flags: raw.flags.get(),
+            extended_info: String::new(),
+        };
 
-        let raw = RawControlProtocolHelloMessage::from_bytes(&buf);
-
-        buf.advance(size);
+        buf.advance(std::mem::size_of::<RawControlProtocolHelloMessage>());
 
         let null_pos = buf
             .iter()
             .position(|&b| b == 0)
             .ok_or_else(|| Error::from_static_msg("invalid control protocol hello message"))?;
 
-        let extended_info = str::from_utf8(&buf.split_to(null_pos))
+        res.extended_info = str::from_utf8(&buf.split_to(null_pos))
             .map_err(|_| Error::from_static_msg("extended info is not UTF-8 encoded"))?
             .to_string();
-
-        let res = Self {
-            protocol_version: encoded.protocol_version(),
-            client_id: ClientId::from_bytes(raw.client_id),
-            client_key: raw.client_key,
-            client_mac: MacAddr::from(raw.client_mac),
-            flags: u32::from_be(raw.flags),
-            extended_info,
-        };
 
         Ok(res)
     }
@@ -145,7 +142,7 @@ impl EncodeMessage for ControlProtocolHelloMessage {
             client_id: self.client_id.into_bytes(),
             client_key: self.client_key,
             client_mac: self.client_mac.into_array(),
-            flags: self.flags.to_be(),
+            flags: U32::new(self.flags),
         };
 
         buf.extend_from_slice(msg.as_bytes());
@@ -159,13 +156,13 @@ impl EncodeMessage for ControlProtocolHelloMessage {
 }
 
 /// Raw representation of the control protocol hello message.
-#[repr(packed, C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawControlProtocolHelloMessage {
     client_id: [u8; 16],
     client_key: [u8; 16],
     client_mac: [u8; 6],
-    flags: u32,
+    flags: U32,
 }
 
 /// Service protocol hello message.

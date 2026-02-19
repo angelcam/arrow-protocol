@@ -11,12 +11,16 @@ use std::{
 };
 
 use bytes::{Buf, BufMut, Bytes};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::{U16, U32},
+};
 
 use self::control::InvalidControlMessage;
 
 use crate::{
     ARROW_PROTOCOL_VERSION,
-    v2::utils::{AsBytes, BufExt, Decode, DecodeWithContext, Encode, FromBytes, UnexpectedEof},
+    v2::utils::{BufExt, Decode, DecodeWithContext, Encode, UnexpectedEof},
 };
 
 pub use self::{
@@ -166,14 +170,16 @@ impl Decode for ArrowMessage {
             return Err(InvalidMessage::UnsupportedProtocolVersion(buf[0]));
         }
 
-        let header = RawMessageHeader::from_bytes(buf)?;
+        let (header, _) = RawMessageHeader::ref_from_prefix(buf)
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
-        let header_size = header.size();
+        let header_size = std::mem::size_of::<RawMessageHeader>();
 
         let version = header.version;
-        let service_id = u16::from_be(header.service_id);
-        let session_id = u32::from_be(header.session_id) & 0xffffff;
-        let body_size = u32::from_be(header.size) as usize;
+        let service_id = header.service_id.get();
+        let session_id = header.session_id.get() & 0xffffff;
+        let body_size = header.size.get() as usize;
 
         let message_size = header_size + body_size;
 
@@ -211,9 +217,9 @@ impl Encode for ArrowMessage {
 
         let header = RawMessageHeader {
             version: self.version,
-            service_id: self.service_id.to_be(),
-            session_id: self.session_id.to_be(),
-            size: body_size.to_be(),
+            service_id: U16::new(self.service_id),
+            session_id: U32::new(self.session_id),
+            size: U32::new(body_size),
         };
 
         buf.put_slice(header.as_bytes());
@@ -299,17 +305,14 @@ impl From<ControlMessage> for ArrowMessageBody {
 }
 
 /// Arrow Message header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessageHeader {
     version: u8,
-    service_id: u16,
-    session_id: u32,
-    size: u32,
+    service_id: U16,
+    session_id: U32,
+    size: U32,
 }
-
-impl AsBytes for RawMessageHeader {}
-impl FromBytes for RawMessageHeader {}
 
 /// Arrow Message decoding context.
 #[derive(Copy, Clone)]

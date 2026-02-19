@@ -8,12 +8,12 @@ use bytes::{Buf, BytesMut};
 use futures::{Sink, Stream};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio_util::codec::{Decoder, Encoder, Framed};
-
-use crate::v3::{
-    PROTOCOL_VERSION,
-    msg::EncodedMessage,
-    utils::{AsBytes, FromBytes},
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::U32,
 };
+
+use crate::v3::{PROTOCOL_VERSION, msg::EncodedMessage};
 
 /// Base connection error.
 #[derive(Debug)]
@@ -124,16 +124,14 @@ impl Decoder for MessageCodec {
     fn decode(&mut self, buf: &mut BytesMut) -> Result<Option<Self::Item>, Self::Error> {
         let header_size = std::mem::size_of::<MessageHeader>();
 
-        if buf.len() < header_size {
+        let Ok((header, _)) = MessageHeader::ref_from_prefix(buf).map_err(SizeError::from) else {
             return Ok(None);
-        }
+        };
 
-        let header = MessageHeader::from_bytes(buf);
+        let version = header.version;
 
-        if header.version != PROTOCOL_VERSION {
-            return Err(BaseConnectionError::UnsupportedProtocolVersion(
-                header.version,
-            ));
+        if version != PROTOCOL_VERSION {
+            return Err(BaseConnectionError::UnsupportedProtocolVersion(version));
         }
 
         let kind = header
@@ -141,7 +139,7 @@ impl Decoder for MessageCodec {
             .try_into()
             .map_err(|_| BaseConnectionError::UnknownMessageType(header.kind))?;
 
-        let payload_size = u32::from_be(header.size);
+        let payload_size = header.size.get();
 
         if payload_size > self.max_rx_payload_size {
             return Err(BaseConnectionError::PayloadSizeExceeded);
@@ -153,7 +151,7 @@ impl Decoder for MessageCodec {
 
         let payload = buf.split_to(payload_size as usize);
 
-        let res = EncodedMessage::new_with_version(header.version, kind, payload.freeze());
+        let res = EncodedMessage::new_with_version(version, kind, payload.freeze());
 
         Ok(Some(res))
     }
@@ -181,7 +179,7 @@ impl Encoder<EncodedMessage> for MessageCodec {
         let header = MessageHeader {
             version: PROTOCOL_VERSION,
             kind: kind as u8,
-            size: u32::to_be(payload_size as u32),
+            size: U32::new(payload_size as u32),
         };
 
         let header = header.as_bytes();
@@ -197,12 +195,12 @@ impl Encoder<EncodedMessage> for MessageCodec {
 }
 
 /// Message header.
-#[repr(packed, C)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct MessageHeader {
     version: u8,
     kind: u8,
-    size: u32,
+    size: U32,
 }
 
 #[cfg(test)]

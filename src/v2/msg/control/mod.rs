@@ -19,6 +19,10 @@ use std::{
 };
 
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::U16,
+};
 
 pub use self::{
     ack::AckMessage, connect::ConnectMessage, data_ack::DataAckMessage, hup::HupMessage,
@@ -30,10 +34,7 @@ use crate::{
     ClientId, ClientKey, MacAddr,
     v2::{
         msg::control::scan_report::HostRecord,
-        utils::{
-            AsBytes, Decode, DecodeWithContext, Encode, FromBytes, UnexpectedEof,
-            net::UnsupportedIpAddrVersion,
-        },
+        utils::{Decode, DecodeWithContext, Encode, UnexpectedEof, net::UnsupportedIpAddrVersion},
     },
 };
 
@@ -358,14 +359,16 @@ impl DecodeWithContext for ControlMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let header = RawMessageHeader::from_bytes(data.as_ref())?;
+        let (header, _) = RawMessageHeader::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
-        let message_id = u16::from_be(header.message_id);
-        let message_type = ControlMessageType::try_from(u16::from_be(header.message_type))?;
+        let message_id = header.message_id.get();
+        let message_type = ControlMessageType::try_from(header.message_type.get())?;
 
         let context = ControlMessageContext::new(version, message_type);
 
-        data.advance(header.size());
+        data.advance(std::mem::size_of::<RawMessageHeader>());
 
         let message_payload = ControlMessagePayload::decode(context, data)
             .map_err(|err| InvalidControlMessageInner::InnerDecodingError(message_type, err))?;
@@ -387,8 +390,8 @@ impl Encode for ControlMessage {
         let message_type = self.message_payload.message_type() as u16;
 
         let header = RawMessageHeader {
-            message_id: self.message_id.to_be(),
-            message_type: message_type.to_be(),
+            message_id: U16::new(self.message_id),
+            message_type: U16::new(message_type),
         };
 
         buf.put_slice(header.as_bytes());
@@ -403,15 +406,12 @@ impl Encode for ControlMessage {
 }
 
 /// Control Protocol message header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessageHeader {
-    message_id: u16,
-    message_type: u16,
+    message_id: U16,
+    message_type: U16,
 }
-
-impl AsBytes for RawMessageHeader {}
-impl FromBytes for RawMessageHeader {}
 
 /// Unknown control message type.
 #[derive(Debug, Copy, Clone)]

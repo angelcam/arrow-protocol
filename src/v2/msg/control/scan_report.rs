@@ -3,12 +3,16 @@
 use std::net::IpAddr;
 
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::{U16, U32},
+};
 
 use crate::{
     MacAddr,
     v2::{
         msg::control::{DecodingError, svc_table::ServiceTable},
-        utils::{AsBytes, Decode, Encode, FromBytes, net::IpAddrExt},
+        utils::{Decode, Encode, UnexpectedEof, net::IpAddrExt},
     },
 };
 
@@ -59,12 +63,14 @@ impl Decode for ScanReportMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let header = RawMessageHeader::from_bytes(data.as_ref())?;
+        let (header, _) = RawMessageHeader::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
-        let request_id = u16::from_be(header.request_id);
-        let host_count = u32::from_be(header.host_count) as usize;
+        let request_id = header.request_id.get();
+        let host_count = header.host_count.get() as usize;
 
-        data.advance(header.size());
+        data.advance(std::mem::size_of::<RawMessageHeader>());
 
         let mut hosts = Vec::with_capacity(host_count);
 
@@ -92,8 +98,8 @@ impl Encode for ScanReportMessage {
         let host_count = self.hosts.len() as u32;
 
         let header = RawMessageHeader {
-            request_id: self.request_id.to_be(),
-            host_count: host_count.to_be(),
+            request_id: U16::new(self.request_id),
+            host_count: U32::new(host_count),
         };
 
         buf.put_slice(header.as_bytes());
@@ -113,15 +119,12 @@ impl Encode for ScanReportMessage {
 }
 
 /// Scan report header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessageHeader {
-    request_id: u16,
-    host_count: u32,
+    request_id: U16,
+    host_count: U32,
 }
-
-impl AsBytes for RawMessageHeader {}
-impl FromBytes for RawMessageHeader {}
 
 /// Scan report host.
 #[derive(Clone)]
@@ -185,24 +188,23 @@ impl Decode for HostRecord {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let header = RawHostRecordHeader::from_bytes(data.as_ref())?;
+        let (header, _) = RawHostRecordHeader::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
-        let header_len = header.size();
+        let header_len = std::mem::size_of::<RawHostRecordHeader>();
 
         let ip_address = IpAddr::decode(header.ip_version, header.ip_address)?;
 
-        let port_count = u16::from_be(header.port_count) as usize;
+        let port_count = header.port_count.get() as usize;
 
         let rest = &data.as_ref()[header_len..];
 
-        if rest.len() < (port_count << 1) {
-            return Err(DecodingError::UnexpectedEof);
-        }
+        let (be_ports, _) = <[U16]>::ref_from_prefix_with_elems(rest, port_count)
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
-        let be_ports =
-            unsafe { std::slice::from_raw_parts(rest as *const _ as *const u16, port_count) };
-
-        let ports = be_ports.iter().copied().map(u16::from_be).collect();
+        let ports = be_ports.iter().copied().map(U16::get).collect();
 
         let res = Self {
             flags: header.flags,
@@ -229,7 +231,7 @@ impl Encode for HostRecord {
             mac_address: self.mac_address.into_array(),
             ip_version: self.ip_address.version(),
             ip_address: self.ip_address.encode(),
-            port_count: port_count.to_be(),
+            port_count: U16::new(port_count),
         };
 
         buf.put_slice(header.as_bytes());
@@ -246,15 +248,12 @@ impl Encode for HostRecord {
 }
 
 /// Host record header.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawHostRecordHeader {
     flags: u8,
     mac_address: [u8; 6],
     ip_version: u8,
     ip_address: [u8; 16],
-    port_count: u16,
+    port_count: U16,
 }
-
-impl AsBytes for RawHostRecordHeader {}
-impl FromBytes for RawHostRecordHeader {}

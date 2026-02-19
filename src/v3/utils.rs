@@ -1,62 +1,3 @@
-/// Trait for converting `Copy` type instances to byte slices.
-pub trait AsBytes {
-    /// Get the value as a byte slice.
-    fn as_bytes(&self) -> &[u8];
-}
-
-impl<T> AsBytes for T
-where
-    T: Copy,
-{
-    fn as_bytes(&self) -> &[u8] {
-        let ptr = self as *const T;
-        let size = std::mem::size_of_val(self);
-
-        // SAFETY: This is safe because T is `Copy` and we are creating a byte
-        //   slice from a valid pointer with the correct size.
-        unsafe { std::slice::from_raw_parts(ptr as _, size) }
-    }
-}
-
-impl<T> AsBytes for [T]
-where
-    T: Copy,
-{
-    fn as_bytes(&self) -> &[u8] {
-        let ptr = self.as_ptr();
-        let size = std::mem::size_of_val(self);
-
-        // SAFETY: This is safe because T is `Copy` and we are creating a byte
-        //   slice from a valid pointer with the correct size.
-        unsafe { std::slice::from_raw_parts(ptr as _, size) }
-    }
-}
-
-/// Trait for creating `Copy` type instances from bytes.
-pub trait FromBytes {
-    /// Copy the value instance from bytes.
-    ///
-    /// # Panics
-    /// The method will panic if the provided byte slice is smaller than the
-    /// size of the type.
-    fn from_bytes(bytes: &[u8]) -> Self;
-}
-
-impl<T> FromBytes for T
-where
-    T: Copy,
-{
-    fn from_bytes(bytes: &[u8]) -> Self {
-        let size = std::mem::size_of::<T>();
-
-        assert!(bytes.len() >= size);
-
-        // SAFETY: This is safe because T is `Copy` and we are reading from a
-        //   valid pointer with the correct size.
-        unsafe { std::ptr::read_unaligned(bytes.as_ptr() as *const T) }
-    }
-}
-
 #[cfg(test)]
 pub mod tests {
     use std::{
@@ -69,11 +10,12 @@ pub mod tests {
     use futures::channel::mpsc::{self, Receiver, Sender, UnboundedReceiver, UnboundedSender};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
     use tokio_util::io::StreamReader;
-
-    use crate::v3::{
-        msg::{EncodeMessage, EncodedMessage, MessageEncoder, MessageKind},
-        utils::FromBytes,
+    use zerocopy::{
+        FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+        byteorder::network_endian::U32,
     };
+
+    use crate::v3::msg::{EncodeMessage, EncodedMessage, MessageEncoder, MessageKind};
 
     /// Type alias.
     pub type FakeIoInput = Receiver<io::Result<Bytes>>;
@@ -130,12 +72,12 @@ pub mod tests {
             mut buf: &[u8],
         ) -> Poll<io::Result<usize>> {
             // helper struct
-            #[repr(C, packed)]
-            #[derive(Copy, Clone)]
+            #[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+            #[repr(C)]
             struct MessageHeader {
                 version: u8,
                 kind: u8,
-                length: u32,
+                length: U32,
             }
 
             let len = buf.len();
@@ -147,10 +89,12 @@ pub mod tests {
             // NOTE: The BaseConnection may send multiple messages in one write
             //   call, so we need to split them here for testing purposes.
             while buf.len() >= std::mem::size_of::<MessageHeader>() {
-                let header = MessageHeader::from_bytes(&buf);
+                let (header, _) = MessageHeader::ref_from_prefix(&buf)
+                    .map_err(SizeError::from)
+                    .unwrap();
 
                 let header_len = std::mem::size_of::<MessageHeader>();
-                let payload_len = u32::from_be(header.length) as usize;
+                let payload_len = header.length.get() as usize;
 
                 let total_len = header_len + payload_len;
 

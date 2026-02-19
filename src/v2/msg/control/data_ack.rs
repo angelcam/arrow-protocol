@@ -1,8 +1,12 @@
 use bytes::{Buf, BufMut};
+use zerocopy::{
+    FromBytes, Immutable, IntoBytes, KnownLayout, SizeError, Unaligned,
+    byteorder::network_endian::U32,
+};
 
 use crate::v2::{
     msg::control::DecodingError,
-    utils::{AsBytes, Decode, Encode, FromBytes},
+    utils::{Decode, Encode, UnexpectedEof},
 };
 
 /// DATA_ACK message payload.
@@ -40,14 +44,16 @@ impl Decode for DataAckMessage {
     where
         B: Buf + AsRef<[u8]>,
     {
-        let raw = RawMessage::from_bytes(data.as_ref())?;
+        let (raw, _) = RawMessage::ref_from_prefix(data.as_ref())
+            .map_err(SizeError::from)
+            .map_err(|_| UnexpectedEof)?;
 
         let res = Self {
-            session_id: u32::from_be(raw.session_id) & 0x00ffffff,
-            length: u32::from_be(raw.length),
+            session_id: raw.session_id.get() & 0x00ffffff,
+            length: raw.length.get(),
         };
 
-        data.advance(raw.size());
+        data.advance(std::mem::size_of::<RawMessage>());
 
         Ok(res)
     }
@@ -59,8 +65,8 @@ impl Encode for DataAckMessage {
         B: BufMut,
     {
         let raw = RawMessage {
-            session_id: self.session_id.to_be(),
-            length: self.length.to_be(),
+            session_id: U32::new(self.session_id),
+            length: U32::new(self.length),
         };
 
         buf.put_slice(raw.as_bytes());
@@ -73,12 +79,9 @@ impl Encode for DataAckMessage {
 }
 
 /// Raw DATA_ACK message.
-#[repr(C, packed)]
-#[derive(Copy, Clone)]
+#[derive(Copy, Clone, KnownLayout, Immutable, Unaligned, IntoBytes, FromBytes)]
+#[repr(C)]
 struct RawMessage {
-    session_id: u32,
-    length: u32,
+    session_id: U32,
+    length: U32,
 }
-
-impl AsBytes for RawMessage {}
-impl FromBytes for RawMessage {}
