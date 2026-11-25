@@ -132,6 +132,8 @@ impl ArrowProtocolAcceptor {
     {
         let (mut connection, ping_pong_handler) = Connection::builder()
             .with_max_rx_payload_size(self.max_rx_payload_size)
+            .with_write_timeout(self.pong_timeout)
+            .with_close_timeout(self.pong_timeout)
             .build(io);
 
         let res = self.accept_internal(&mut connection).await;

@@ -13,8 +13,7 @@ use std::{
 
 use futures::{
     Sink, Stream, StreamExt,
-    stream::SplitStream,
-    stream::{AbortHandle, Abortable},
+    stream::{AbortHandle, Abortable, SplitStream},
 };
 use serde_lite::Serialize;
 use tokio::io::{AsyncRead, AsyncWrite};
@@ -818,6 +817,8 @@ mod tests {
             .await
             .unwrap();
 
+        std::mem::drop(incoming_tx);
+
         let client_id = ClientId::from_bytes([0xaa; 16]);
         let client_key = [0xbb; 16];
         let client_mac = MacAddr::from([0xcc; 6]);
@@ -870,28 +871,17 @@ mod tests {
 
         let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
 
-        let err = ControlProtocolClientConnection::builder()
-            .with_max_rx_payload_size(1024)
-            .with_max_local_concurrent_requests(4)
-            .with_ping_interval(Duration::from_secs(20))
-            .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, hello)
-            .await
-            .unwrap()
-            .process_incoming_messages(DummyLocalService)
-            .await
-            .err()
-            .unwrap();
-
-        let err = err
-            .source()
-            .and_then(|source| source.source())
-            .and_then(|source| source.downcast_ref::<ControlProtocolError>());
-
-        assert!(matches!(
-            err,
-            Some(&ControlProtocolError::UnexpectedMessageType(_))
-        ));
+        let client = tokio::spawn(async move {
+            ControlProtocolClientConnection::builder()
+                .with_max_rx_payload_size(1024)
+                .with_max_local_concurrent_requests(4)
+                .with_ping_interval(Duration::from_secs(20))
+                .with_pong_timeout(Duration::from_secs(10))
+                .connect(io, hello)
+                .await?
+                .process_incoming_messages(DummyLocalService)
+                .await
+        });
 
         // skip the hello message and the local options message
         outgoing_rx.next().await.unwrap();
@@ -905,6 +895,20 @@ mod tests {
         );
 
         assert!(outgoing_rx.next().await.is_none());
+
+        std::mem::drop(incoming_tx);
+
+        let err = client.await.unwrap().err().unwrap();
+
+        let err = err
+            .source()
+            .and_then(|source| source.source())
+            .and_then(|source| source.downcast_ref::<ControlProtocolError>());
+
+        assert!(matches!(
+            err,
+            Some(&ControlProtocolError::UnexpectedMessageType(_))
+        ));
     }
 
     #[tokio::test]
@@ -941,28 +945,17 @@ mod tests {
 
         let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
 
-        let err = ControlProtocolClientConnection::builder()
-            .with_max_rx_payload_size(1024)
-            .with_max_local_concurrent_requests(2)
-            .with_ping_interval(Duration::from_secs(20))
-            .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, hello)
-            .await
-            .unwrap()
-            .process_incoming_messages(DummyLocalService)
-            .await
-            .err()
-            .unwrap();
-
-        let err = err
-            .source()
-            .and_then(|source| source.source())
-            .and_then(|source| source.downcast_ref::<ControlProtocolError>());
-
-        assert!(matches!(
-            err,
-            Some(&ControlProtocolError::TooManyConcurrentRequests)
-        ));
+        let client = tokio::spawn(async move {
+            ControlProtocolClientConnection::builder()
+                .with_max_rx_payload_size(1024)
+                .with_max_local_concurrent_requests(2)
+                .with_ping_interval(Duration::from_secs(20))
+                .with_pong_timeout(Duration::from_secs(10))
+                .connect(io, hello)
+                .await?
+                .process_incoming_messages(DummyLocalService)
+                .await
+        });
 
         // skip the hello message and the local options message
         outgoing_rx.next().await.unwrap();
@@ -976,6 +969,20 @@ mod tests {
         );
 
         assert!(outgoing_rx.next().await.is_none());
+
+        std::mem::drop(incoming_tx);
+
+        let err = client.await.unwrap().err().unwrap();
+
+        let err = err
+            .source()
+            .and_then(|source| source.source())
+            .and_then(|source| source.downcast_ref::<ControlProtocolError>());
+
+        assert!(matches!(
+            err,
+            Some(&ControlProtocolError::TooManyConcurrentRequests)
+        ));
     }
 
     #[tokio::test]

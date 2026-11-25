@@ -118,7 +118,9 @@ impl ServiceProtocolConnectionBuilder {
             .connect(io, hello)
             .await?;
 
-        Ok(ServiceProtocolConnection::new(connection, self.rx_capacity))
+        let res = ServiceProtocolConnection::new(connection, self.rx_capacity);
+
+        Ok(res)
     }
 }
 
@@ -162,7 +164,9 @@ impl ServiceProtocolHandshake {
     pub async fn accept(self) -> Result<ServiceProtocolConnection, Error> {
         let connection = self.inner.accept().await?;
 
-        Ok(ServiceProtocolConnection::new(connection, self.rx_capacity))
+        let res = ServiceProtocolConnection::new(connection, self.rx_capacity);
+
+        Ok(res)
     }
 
     /// Reject the connection as unauthorized.
@@ -172,6 +176,12 @@ impl ServiceProtocolHandshake {
 }
 
 /// Service protocol connection.
+///
+/// # Usage
+/// Keep in mind that the service protocol limits the maximum amount of
+/// in-flight data and a slow/stalled peer can block the outgoing channel
+/// indefinitely. Using a timeout on the feed/send/flush/close operations is
+/// recommended (depending on the application protocol).
 pub struct ServiceProtocolConnection {
     context: Arc<Mutex<ServiceConnectionContext>>,
     reader: JoinHandle<()>,
@@ -219,12 +229,7 @@ impl ServiceProtocolConnection {
 
 impl Drop for ServiceProtocolConnection {
     fn drop(&mut self) {
-        // stop the reader task
         self.reader.abort();
-
-        // ... and terminate the connection context (this will allow the writer
-        // task to write any remaining messages and exit)
-        self.context.lock().unwrap().terminate();
     }
 }
 
@@ -274,7 +279,7 @@ impl IncomingMessageReader {
 
             context.process_incoming_item(item);
 
-            if context.incoming_eof() {
+            if context.incoming_closed() {
                 break;
             }
         }

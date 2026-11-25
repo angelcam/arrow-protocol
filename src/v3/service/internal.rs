@@ -130,6 +130,8 @@ impl InternalConnectionBuilder {
     {
         let (inner, ping_pong_handler) = Connection::builder()
             .with_max_rx_payload_size(self.max_rx_payload_size)
+            .with_write_timeout(self.pong_timeout)
+            .with_close_timeout(self.pong_timeout)
             .build(io);
 
         let local_options = ServiceProtocolOptions::new(self.max_rx_payload_size, self.rx_capacity);
@@ -167,6 +169,8 @@ impl InternalConnectionBuilder {
     {
         let (inner, ping_pong_handler) = Connection::builder()
             .with_max_rx_payload_size(self.max_rx_payload_size)
+            .with_write_timeout(self.pong_timeout)
+            .with_close_timeout(self.pong_timeout)
             .build(io);
 
         let local_options = ServiceProtocolOptions::new(self.max_rx_payload_size, self.rx_capacity);
@@ -455,15 +459,17 @@ mod tests {
             .await
             .unwrap();
 
-        InternalConnection::builder()
-            .with_max_rx_payload_size(1024)
-            .with_rx_capacity(1024)
-            .with_ping_interval(Duration::from_secs(20))
-            .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, ServiceProtocolHelloMessage::new("foo"))
-            .await
-            .err()
-            .unwrap();
+        let hello = ServiceProtocolHelloMessage::new("foo");
+
+        let client = tokio::spawn(async move {
+            InternalConnection::builder()
+                .with_max_rx_payload_size(1024)
+                .with_rx_capacity(1024)
+                .with_ping_interval(Duration::from_secs(20))
+                .with_pong_timeout(Duration::from_secs(10))
+                .connect(io, hello)
+                .await
+        });
 
         // we skip the hello message
         outgoing_rx.next().await.unwrap();
@@ -476,6 +482,10 @@ mod tests {
         );
 
         assert!(outgoing_rx.next().await.is_none());
+
+        std::mem::drop(incoming_tx);
+
+        client.await.unwrap().err().unwrap();
 
         let (mut incoming_tx, incoming_rx) = create_fake_io_input(4);
         let (outgoing_tx, mut outgoing_rx) = create_fake_io_output();
@@ -490,15 +500,17 @@ mod tests {
             .await
             .unwrap();
 
-        InternalConnection::builder()
-            .with_max_rx_payload_size(1024)
-            .with_rx_capacity(1024)
-            .with_ping_interval(Duration::from_secs(20))
-            .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, ServiceProtocolHelloMessage::new("foo"))
-            .await
-            .err()
-            .unwrap();
+        let hello = ServiceProtocolHelloMessage::new("foo");
+
+        let client = tokio::spawn(async move {
+            InternalConnection::builder()
+                .with_max_rx_payload_size(1024)
+                .with_rx_capacity(1024)
+                .with_ping_interval(Duration::from_secs(20))
+                .with_pong_timeout(Duration::from_secs(10))
+                .connect(io, hello)
+                .await
+        });
 
         // we skip the hello message
         outgoing_rx.next().await.unwrap();
@@ -511,6 +523,10 @@ mod tests {
         );
 
         assert!(outgoing_rx.next().await.is_none());
+
+        std::mem::drop(incoming_tx);
+
+        client.await.unwrap().err().unwrap();
     }
 
     #[tokio::test]
@@ -529,15 +545,17 @@ mod tests {
             .await
             .unwrap();
 
-        InternalConnection::builder()
-            .with_max_rx_payload_size(1024)
-            .with_max_rx_payload_size(1024)
-            .with_ping_interval(Duration::from_secs(20))
-            .with_pong_timeout(Duration::from_secs(10))
-            .connect(io, ServiceProtocolHelloMessage::new("foo"))
-            .await
-            .err()
-            .unwrap();
+        let hello = ServiceProtocolHelloMessage::new("foo");
+
+        let client = tokio::spawn(async move {
+            InternalConnection::builder()
+                .with_max_rx_payload_size(1024)
+                .with_max_rx_payload_size(1024)
+                .with_ping_interval(Duration::from_secs(20))
+                .with_pong_timeout(Duration::from_secs(10))
+                .connect(io, hello)
+                .await
+        });
 
         // we skip the hello message
         outgoing_rx.next().await.unwrap();
@@ -550,5 +568,9 @@ mod tests {
         );
 
         assert!(outgoing_rx.next().await.is_none());
+
+        std::mem::drop(incoming_tx);
+
+        client.await.unwrap().err().unwrap();
     }
 }

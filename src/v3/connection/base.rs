@@ -2,6 +2,7 @@ use std::{
     io,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use bytes::{Buf, BytesMut};
@@ -13,7 +14,11 @@ use zerocopy::{
     byteorder::network_endian::U32,
 };
 
-use crate::v3::{PROTOCOL_VERSION, msg::EncodedMessage};
+use crate::v3::{
+    PROTOCOL_VERSION,
+    connection::io::{BaseIO, TXState},
+    msg::EncodedMessage,
+};
 
 /// Base connection error.
 #[derive(Debug)]
@@ -31,27 +36,62 @@ impl From<io::Error> for BaseConnectionError {
     }
 }
 
+/// Base connection builder.
+pub struct BaseConnectionBuilder {
+    max_rx_payload_size: u32,
+    write_timeout: Duration,
+    close_timeout: Duration,
+}
+
+impl BaseConnectionBuilder {
+    /// Create a new base connection builder.
+    pub const fn new() -> Self {
+        Self {
+            max_rx_payload_size: 65_536,
+            write_timeout: Duration::from_secs(60),
+            close_timeout: Duration::from_secs(60),
+        }
+    }
+
+    /// Set the maximum RX payload size.
+    ///
+    /// All decoded messages will be limited to the specified maximum payload
+    /// size. If an incoming message exceeds this size, an error will be
+    /// returned.
+    pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
+        self.max_rx_payload_size = size;
+        self
+    }
+
+    /// Set the write timeout.
+    pub const fn with_write_timeout(mut self, timeout: Duration) -> Self {
+        self.write_timeout = timeout;
+        self
+    }
+
+    /// Set the close timeout.
+    pub const fn with_close_timeout(mut self, timeout: Duration) -> Self {
+        self.close_timeout = timeout;
+        self
+    }
+
+    /// Build the base connection.
+    pub fn build<T>(self, io: T) -> BaseConnection<T> {
+        let codec = MessageCodec::new(self.max_rx_payload_size);
+        let io = BaseIO::new(io, self.write_timeout, self.close_timeout);
+        let inner = Framed::new(io, codec);
+
+        BaseConnection { inner }
+    }
+}
+
 pin_project_lite::pin_project! {
     /// Base connection.
     ///
     /// The connection handles only low-level message framing.
     pub struct BaseConnection<T> {
         #[pin]
-        inner: Framed<T, MessageCodec>,
-    }
-}
-
-impl<T> BaseConnection<T> {
-    /// Create a new base connection.
-    ///
-    /// All decoded messages will be limited to the specified maximum payload
-    /// size. If an incoming message exceeds this size, an error will be
-    /// returned.
-    pub fn new(io: T, max_rx_payload_size: u32) -> Self {
-        let codec = MessageCodec::new(max_rx_payload_size);
-        let inner = Framed::new(io, codec);
-
-        Self { inner }
+        inner: Framed<BaseIO<T>, MessageCodec>,
     }
 }
 
@@ -62,9 +102,26 @@ where
     type Item = Result<EncodedMessage, BaseConnectionError>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        let this = self.project();
+        let mut this = self.project();
 
-        this.inner.poll_next(cx)
+        let inner = this.inner.as_mut();
+
+        let res = match futures::ready!(inner.poll_next(cx)) {
+            Some(Err(err)) if matches!(err, BaseConnectionError::UnexpectedEOF) => {
+                let io = this.inner.get_ref();
+
+                let s = io.tx_state();
+
+                if matches!(s, TXState::Open | TXState::Broken) {
+                    Some(Err(err))
+                } else {
+                    None
+                }
+            }
+            r => r,
+        };
+
+        Poll::Ready(res)
     }
 }
 
@@ -215,7 +272,7 @@ mod tests {
     use futures::{SinkExt, StreamExt};
     use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
-    use super::{BaseConnection, BaseConnectionError};
+    use super::{BaseConnectionBuilder, BaseConnectionError};
 
     use crate::v3::msg::{EncodedMessage, MessageKind};
 
@@ -281,12 +338,13 @@ mod tests {
     async fn test_unsupported_protocol_version() {
         let fake_io = FakeIO::new(&[0xff, 0x02, 0x00, 0x00, 0x00, 0x01, 0x01][..]);
 
-        let err = BaseConnection::new(fake_io, 1024)
-            .next()
-            .await
-            .unwrap()
-            .err()
-            .unwrap();
+        let connection = BaseConnectionBuilder::new()
+            .with_max_rx_payload_size(1024)
+            .build(fake_io);
+
+        futures::pin_mut!(connection);
+
+        let err = connection.next().await.unwrap().err().unwrap();
 
         assert!(matches!(
             err,
@@ -298,12 +356,13 @@ mod tests {
     async fn test_unknown_message_type() {
         let fake_io = FakeIO::new(&[0x03, 0xff, 0x00, 0x00, 0x00, 0x01, 0x01][..]);
 
-        let err = BaseConnection::new(fake_io, 1024)
-            .next()
-            .await
-            .unwrap()
-            .err()
-            .unwrap();
+        let connection = BaseConnectionBuilder::new()
+            .with_max_rx_payload_size(1024)
+            .build(fake_io);
+
+        futures::pin_mut!(connection);
+
+        let err = connection.next().await.unwrap().err().unwrap();
 
         assert!(matches!(err, BaseConnectionError::UnknownMessageType(0xff)));
     }
@@ -312,12 +371,13 @@ mod tests {
     async fn test_payload_size_exceeded() {
         let fake_io = FakeIO::new(&[0x03, 0x06, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00][..]);
 
-        let err = BaseConnection::new(fake_io, 1)
-            .next()
-            .await
-            .unwrap()
-            .err()
-            .unwrap();
+        let connection = BaseConnectionBuilder::new()
+            .with_max_rx_payload_size(1)
+            .build(fake_io);
+
+        futures::pin_mut!(connection);
+
+        let err = connection.next().await.unwrap().err().unwrap();
 
         assert!(matches!(err, BaseConnectionError::PayloadSizeExceeded));
     }
@@ -326,12 +386,13 @@ mod tests {
     async fn test_unexpected_eof() {
         let fake_io = FakeIO::new(&[0x03, 0x06, 0x00, 0x00, 0x00, 0x02, 0x00][..]);
 
-        let err = BaseConnection::new(fake_io, 1024)
-            .next()
-            .await
-            .unwrap()
-            .err()
-            .unwrap();
+        let connection = BaseConnectionBuilder::new()
+            .with_max_rx_payload_size(1024)
+            .build(fake_io);
+
+        futures::pin_mut!(connection);
+
+        let err = connection.next().await.unwrap().err().unwrap();
 
         assert!(matches!(err, BaseConnectionError::UnexpectedEOF));
     }
@@ -348,7 +409,11 @@ mod tests {
 
         let mut fake_io = FakeIO::new(data.clone());
 
-        let connection = BaseConnection::new(&mut fake_io, 1024);
+        let connection = BaseConnectionBuilder::new()
+            .with_max_rx_payload_size(1024)
+            .build(&mut fake_io);
+
+        futures::pin_mut!(connection);
 
         let (mut tx, rx) = connection.split();
 

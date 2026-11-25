@@ -1,11 +1,12 @@
 mod base;
+mod io;
 mod ping;
 
 use std::{
     fmt::{self, Display, Formatter},
-    io,
     pin::Pin,
     task::{Context, Poll},
+    time::Duration,
 };
 
 use futures::{
@@ -20,7 +21,7 @@ use tokio::{
 };
 
 use self::{
-    base::{BaseConnection, BaseConnectionError},
+    base::{BaseConnectionBuilder, BaseConnectionError},
     ping::{IncomingPongSender, OutgoingPingReceiver, PingPongError, PingPongErrorReceiver},
 };
 
@@ -37,20 +38,32 @@ pub use self::ping::PingPongHandler;
 
 /// Connection builder.
 pub struct ConnectionBuilder {
-    max_rx_payload_size: u32,
+    inner: BaseConnectionBuilder,
 }
 
 impl ConnectionBuilder {
     /// Create a new connection builder.
     const fn new() -> Self {
         Self {
-            max_rx_payload_size: 65536,
+            inner: BaseConnectionBuilder::new(),
         }
     }
 
     /// Set the maximum payload size for received messages.
     pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
-        self.max_rx_payload_size = size;
+        self.inner = self.inner.with_max_rx_payload_size(size);
+        self
+    }
+
+    /// Set the write timeout.
+    pub const fn with_write_timeout(mut self, timeout: Duration) -> Self {
+        self.inner = self.inner.with_write_timeout(timeout);
+        self
+    }
+
+    /// Set the close timeout.
+    pub const fn with_close_timeout(mut self, timeout: Duration) -> Self {
+        self.inner = self.inner.with_close_timeout(timeout);
         self
     }
 
@@ -64,7 +77,7 @@ impl ConnectionBuilder {
     where
         T: AsyncRead + AsyncWrite + Send + 'static,
     {
-        let connection = BaseConnection::new(io, self.max_rx_payload_size);
+        let connection = self.inner.build(io);
 
         let (tx, rx) = connection.split();
 
@@ -88,7 +101,9 @@ impl ConnectionBuilder {
         };
 
         // TERMINATION: The task will be terminated when the base connection
-        //   returns `None` or an error OR when the connection is dropped.
+        //   returns `None` or an error OR when the connection is dropped. Note
+        //   that this will also terminate the PING-PONG handler because the
+        //   connection is no longer able to receive PONGs.
         let reader_task = tokio::spawn(async move {
             let _ = reader.read_all(rx).await;
         });
@@ -98,9 +113,11 @@ impl ConnectionBuilder {
             outgoing_ping_rx,
         };
 
-        // TERMINATION: The task will be terminated when the reader task is
-        //   terminated AND the connection is closed/dropped and all messages
-        //   have been sent.
+        // TERMINATION: The task will be terminated when the sink part of the
+        //   connection is closed OR the connection is dropped and all messages
+        //   have been sent. Note that closing the sink part of the connection
+        //   will also terminate the PING-PONG handler because the connection
+        //   is no longer able to send PINGs.
         tokio::spawn(sender.send_all(tx));
 
         let res = Connection {
@@ -137,6 +154,8 @@ impl Connection {
 
 impl Drop for Connection {
     fn drop(&mut self) {
+        self.tx.close_channel();
+
         self.reader_task.abort();
 
         self.outgoing_ping_abort_handle.abort();
@@ -173,10 +192,15 @@ impl Sink<EncodedMessage> for Connection {
             .map_err(|_| Error::from_static_msg("connection closed"))
     }
 
-    fn poll_close(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
-        self.tx
-            .poll_close_unpin(cx)
-            .map_err(|_| Error::from_static_msg("connection closed"))
+    fn poll_close(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {
+        // stop the outgoing pings
+        self.outgoing_ping_abort_handle.abort();
+
+        // ... and close the channel for all senders (this will stop the
+        // corresponding OutgoingMessageSender after draining the channel)
+        self.tx.close_channel();
+
+        Poll::Ready(Ok(()))
     }
 }
 
@@ -371,7 +395,7 @@ enum ConnectionError {
     UnexpectedEOF,
     UnexpectedPongId(u16),
     Timeout,
-    IO(io::Error),
+    IO(std::io::Error),
 }
 
 impl ConnectionError {
@@ -438,8 +462,8 @@ impl From<BaseConnectionError> for ConnectionError {
     }
 }
 
-impl From<io::Error> for ConnectionError {
-    fn from(err: io::Error) -> Self {
+impl From<std::io::Error> for ConnectionError {
+    fn from(err: std::io::Error) -> Self {
         Self::IO(err)
     }
 }

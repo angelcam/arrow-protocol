@@ -19,8 +19,8 @@ pub struct ServiceConnectionContext {
     incoming_items: VecDeque<Result<Bytes, Error>>,
     outgoing_messages: VecDeque<ServiceConnectionMessage>,
     outgoing_data: Bytes,
-    incoming_eof: bool,
-    outgoing_eof: bool,
+    incoming_closed: bool,
+    outgoing_closed: bool,
 
     rx_capacity: usize,
     rx_unacknowledged: usize,
@@ -41,8 +41,8 @@ impl ServiceConnectionContext {
             incoming_items: VecDeque::new(),
             outgoing_messages: VecDeque::new(),
             outgoing_data: Bytes::new(),
-            incoming_eof: false,
-            outgoing_eof: false,
+            incoming_closed: false,
+            outgoing_closed: false,
 
             rx_capacity,
             rx_unacknowledged: 0,
@@ -58,8 +58,8 @@ impl ServiceConnectionContext {
     }
 
     /// Check if the incoming side is closed.
-    pub fn incoming_eof(&self) -> bool {
-        self.incoming_eof
+    pub fn incoming_closed(&self) -> bool {
+        self.incoming_closed
     }
 
     /// Process a given incoming item.
@@ -67,7 +67,7 @@ impl ServiceConnectionContext {
         &mut self,
         item: Result<ServiceConnectionMessage, ServiceProtocolError>,
     ) {
-        if self.incoming_eof {
+        if self.incoming_closed {
             return;
         }
 
@@ -161,36 +161,32 @@ impl ServiceConnectionContext {
 
     /// Close the incoming side.
     pub fn close_incoming(&mut self) {
-        if self.incoming_eof {
+        if self.incoming_closed {
             return;
         }
 
-        self.incoming_eof = true;
+        self.incoming_closed = true;
 
         self.notify_foreground_rx_task();
         self.notify_background_tx_task();
+
+        // NOTE: The contract is to close the outgoing channel when the
+        //   incoming channel gets closed. Any remaining outgoing data will
+        //   not be sent and the foreground TX task will get an error on
+        //   flush.
+        self.close_outgoing();
     }
 
     /// Close the outgoing side.
     pub fn close_outgoing(&mut self) {
-        if self.outgoing_eof {
+        if self.outgoing_closed {
             return;
         }
 
-        self.outgoing_eof = true;
+        self.outgoing_closed = true;
 
         self.notify_foreground_tx_task();
         self.notify_background_tx_task();
-    }
-
-    /// Terminate the connection.
-    pub fn terminate(&mut self) {
-        self.incoming_items.clear();
-
-        self.notify_background_tx_task();
-
-        self.close_incoming();
-        self.close_outgoing();
     }
 
     /// Poll incoming data.
@@ -207,7 +203,7 @@ impl ServiceConnectionContext {
             self.notify_background_tx_task();
 
             Poll::Ready(Some(next))
-        } else if self.incoming_eof {
+        } else if self.incoming_closed {
             Poll::Ready(None)
         } else {
             let task = cx.waker();
@@ -225,6 +221,19 @@ impl ServiceConnectionContext {
     ) -> Poll<Option<ServiceConnectionMessage>> {
         if let Some(msg) = self.outgoing_messages.pop_front() {
             Poll::Ready(Some(msg))
+        } else if self.outgoing_closed {
+            // NOTE: The `self.outgoing_closed` means that either the incoming
+            //   channel got closed by the remote peer and we're obligated to
+            //   close the outgoing channel as well or the foreground TX task
+            //   wishes to close the outgoing channel. Note that sending ACK
+            //   messages for any unacknowledged data is not necessary. If the
+            //   closure was initiated by the remote peer, our ACKs would
+            //   unchoke it but it wouldn't be able to send any data because it
+            //   already closed its outgoing channel. If the closure was
+            //   initiated locally, sending ACKs to the remote peer would
+            //   unchoke it and allow it to send more data preventing us from
+            //   closing the connection.
+            Poll::Ready(None)
         } else if self.rx_acknowledge > 0 {
             let ack = RawDataAckMessage::new(self.rx_acknowledge as u32);
 
@@ -250,19 +259,6 @@ impl ServiceConnectionContext {
             let msg = RawDataMessage::new(chunk);
 
             Poll::Ready(Some(msg.into()))
-        } else if self.incoming_eof && self.incoming_items.is_empty() {
-            // NOTE: The `self.incoming_eof` means that there will be no more
-            //   incoming data ACK messages, so even if there is still outgoing
-            //   data, we will never be able to send it. And if there are also
-            //   no more incoming items to deliver, there will be no more
-            //   outgoing data ACK messages either, so we can just terminate
-            //   the outgoing side of the connection.
-
-            // NOTE: The `self.outgoing_eof` value is irrelevant here, because
-            //   even if the outgoing channel is closed, we still need to be
-            //   able to send any potential outgoing data ACK messages or error
-            //   messages.
-            Poll::Ready(None)
         } else {
             let task = cx.waker();
 
@@ -274,7 +270,7 @@ impl ServiceConnectionContext {
 
     /// Poll readiness for sending outgoing data.
     pub fn poll_ready_outgoing(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
-        if self.outgoing_eof {
+        if self.outgoing_closed {
             Poll::Ready(Err(Error::from_static_msg("connection closed")))
         } else if self.outgoing_data.is_empty() {
             Poll::Ready(Ok(()))
@@ -289,7 +285,7 @@ impl ServiceConnectionContext {
 
     /// Send outgoing data.
     pub fn start_send_outgoing(&mut self, chunk: Bytes) -> Result<(), Error> {
-        if self.outgoing_eof {
+        if self.outgoing_closed {
             Err(Error::from_static_msg("connection closed"))
         } else if self.outgoing_data.is_empty() {
             self.outgoing_data = chunk;
@@ -306,7 +302,7 @@ impl ServiceConnectionContext {
     pub fn poll_flush_outgoing(&mut self, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         if self.outgoing_data.is_empty() {
             Poll::Ready(Ok(()))
-        } else if self.outgoing_eof {
+        } else if self.outgoing_closed {
             Poll::Ready(Err(Error::from_static_msg("connection closed")))
         } else {
             let task = cx.waker();

@@ -119,7 +119,10 @@ pub mod tests {
             Poll::Ready(Ok(()))
         }
 
-        fn poll_shutdown(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+        fn poll_shutdown(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<io::Result<()>> {
+            // signal EOF to the other side (i.e. the output receiver)
+            self.tx = None;
+
             Poll::Ready(Ok(()))
         }
     }
