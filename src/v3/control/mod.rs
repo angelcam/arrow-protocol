@@ -784,6 +784,7 @@ mod tests {
                     JsonRpcError, JsonRpcMethod, JsonRpcParams, JsonRpcRequest, JsonRpcResponse,
                     JsonRpcValue,
                 },
+                options::ControlProtocolOptions,
             },
             utils::tests::{
                 EncodedMessageExt, FakeIo, MessageExt, create_fake_io_input, create_fake_io_output,
@@ -791,7 +792,10 @@ mod tests {
         },
     };
 
-    use super::{ControlProtocolClientConnection, ControlProtocolError, ControlProtocolService};
+    use super::{
+        ControlProtocolClientConnection, ControlProtocolError, ControlProtocolServerConnection,
+        ControlProtocolService,
+    };
 
     /// Helper type.
     #[derive(Clone)]
@@ -1117,5 +1121,266 @@ mod tests {
                     assert!(response.is_err());
                 }
             });
+    }
+
+    #[tokio::test]
+    async fn test_oversized_response_terminates_connection() {
+        // helper struct
+        #[derive(Serialize)]
+        struct RequestParams;
+
+        // helper struct
+        #[derive(Clone)]
+        struct BigResponseService;
+
+        impl ControlProtocolService for BigResponseService {
+            async fn handle_request(
+                self,
+                _: JsonRpcMethod,
+                _: JsonRpcParams,
+            ) -> Result<JsonRpcValue, JsonRpcError> {
+                Ok("x".repeat(4096).serialize().unwrap())
+            }
+        }
+
+        let (mut incoming_tx, incoming_rx) = create_fake_io_input(4);
+        let (outgoing_tx, outgoing_rx) = create_fake_io_output();
+
+        let io = FakeIo::new(incoming_rx, Some(outgoing_tx));
+
+        // the remote peer accepts at most 1024 bytes of payload
+        let remote_options = ControlProtocolOptions::new(1024, 16)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(remote_options)).await.unwrap();
+
+        let request = create_json_rpc_request(0, "test_method", RequestParams)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(request)).await.unwrap();
+
+        let client_id = ClientId::from_bytes([0xaa; 16]);
+        let client_key = [0xbb; 16];
+        let client_mac = MacAddr::from([0xcc; 6]);
+
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
+        let connection = ControlProtocolClientConnection::builder()
+            .with_max_rx_payload_size(1024)
+            .with_max_local_concurrent_requests(4)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
+            .connect(io, hello)
+            .await
+            .unwrap()
+            .process_incoming_messages(BigResponseService);
+
+        // NOTE: The response cannot be sent, so the connection must be
+        //   terminated instead of staying half-dead.
+        let res = tokio::time::timeout(Duration::from_secs(5), connection)
+            .await
+            .expect("the connection was not terminated");
+
+        assert!(res.is_err());
+
+        let sent_messages: Vec<Bytes> =
+            tokio::time::timeout(Duration::from_secs(5), outgoing_rx.collect())
+                .await
+                .expect("the transport was not closed");
+
+        // only the hello message and the local options were sent
+        assert_eq!(sent_messages.len(), 2);
+
+        assert_eq!(sent_messages[0][1], 0x00); // hello message
+        assert_eq!(sent_messages[1][1], 0x04); // local options
+
+        std::mem::drop(incoming_tx);
+    }
+
+    #[tokio::test]
+    async fn test_response_after_redirect() {
+        // helper struct
+        #[derive(Serialize)]
+        struct RequestParams;
+
+        let (mut incoming_tx, incoming_rx) = create_fake_io_input(4);
+        let (outgoing_tx, mut outgoing_rx) = create_fake_io_output();
+
+        let io = FakeIo::new(incoming_rx, Some(outgoing_tx));
+
+        let client_id = ClientId::from_bytes([0xaa; 16]);
+        let client_key = [0xbb; 16];
+        let client_mac = MacAddr::from([0xcc; 6]);
+
+        let client_hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac)
+            .to_encoded_message()
+            .to_bytes();
+
+        let client_options = ControlProtocolOptions::new(65_536, 16)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(client_hello)).await.unwrap();
+        incoming_tx.send(Ok(client_options)).await.unwrap();
+
+        let connection = ControlProtocolServerConnection::builder()
+            .with_max_rx_payload_size(1024)
+            .with_max_local_concurrent_requests(4)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
+            .accept(io)
+            .await
+            .unwrap()
+            .accept()
+            .await
+            .unwrap();
+
+        let handle = connection.handle();
+
+        let connection_task = tokio::spawn(async move {
+            connection
+                .process_incoming_messages(DummyLocalService)
+                .await
+        });
+
+        let h = handle.clone();
+
+        let request =
+            tokio::spawn(async move { h.send_request("test_method", RequestParams).await });
+
+        // skip the local options message
+        outgoing_rx.next().await.unwrap();
+
+        let msg = outgoing_rx.next().await.unwrap();
+
+        assert_eq!(msg[1], 0x10); // JSON-RPC request
+
+        let response = create_json_rpc_response(0, RequestParams)
+            .to_encoded_message()
+            .to_bytes();
+
+        // NOTE: The response gets delivered to the connection before the
+        //   redirect but it gets processed after the redirect (this test
+        //   relies on the single-threaded runtime here).
+        incoming_tx.send(Ok(response)).await.unwrap();
+
+        handle.redirect("foo");
+
+        std::mem::drop(incoming_tx);
+
+        // the late response must not turn a regular redirect into an error
+        connection_task.await.unwrap().unwrap();
+
+        // the pending request gets cancelled by the redirect
+        assert!(request.await.unwrap().is_err());
+
+        // the redirect is the last outgoing message
+        let msg = outgoing_rx.next().await.unwrap();
+
+        assert_eq!(
+            msg,
+            &[0x03, 0x03, 0x00, 0x00, 0x00, 0x04, b'f', b'o', b'o', 0x00][..]
+        );
+
+        assert!(outgoing_rx.next().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn test_panicking_handler_sends_error_response() {
+        // helper struct
+        #[derive(Serialize)]
+        struct RequestParams;
+
+        // helper struct
+        #[derive(Clone)]
+        struct PanickingService;
+
+        impl ControlProtocolService for PanickingService {
+            async fn handle_request(
+                self,
+                method: JsonRpcMethod,
+                _: JsonRpcParams,
+            ) -> Result<JsonRpcValue, JsonRpcError> {
+                if &*method == "panic" {
+                    panic!("request handler panic");
+                }
+
+                Ok("ok".serialize().unwrap())
+            }
+        }
+
+        /// Decode a given JSON-RPC response message.
+        fn decode_response(msg: &[u8]) -> serde_json::Value {
+            assert_eq!(msg[1], 0x11); // JSON-RPC response
+
+            serde_json::from_slice(&msg[6..]).unwrap()
+        }
+
+        let (mut incoming_tx, incoming_rx) = create_fake_io_input(4);
+        let (outgoing_tx, mut outgoing_rx) = create_fake_io_output();
+
+        let io = FakeIo::new(incoming_rx, Some(outgoing_tx));
+
+        let remote_options = ControlProtocolOptions::new(65_536, 16)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(remote_options)).await.unwrap();
+
+        let request = create_json_rpc_request(0, "panic", RequestParams)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(request)).await.unwrap();
+
+        let client_id = ClientId::from_bytes([0xaa; 16]);
+        let client_key = [0xbb; 16];
+        let client_mac = MacAddr::from([0xcc; 6]);
+
+        let hello = ControlProtocolHelloMessage::new(client_id, client_key, client_mac);
+
+        // NOTE: There is only one request slot, so the second request below
+        //   would be rejected if the panicking handler did not release it.
+        let connection = ControlProtocolClientConnection::builder()
+            .with_max_rx_payload_size(1024)
+            .with_max_local_concurrent_requests(1)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
+            .connect(io, hello)
+            .await
+            .unwrap();
+
+        let connection_task =
+            tokio::spawn(
+                async move { connection.process_incoming_messages(PanickingService).await },
+            );
+
+        // skip the hello message and the local options message
+        outgoing_rx.next().await.unwrap();
+        outgoing_rx.next().await.unwrap();
+
+        let response = decode_response(&outgoing_rx.next().await.unwrap());
+
+        assert_eq!(response["id"], 0);
+        assert!(response.get("error").is_some());
+
+        let request = create_json_rpc_request(1, "test_method", RequestParams)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(request)).await.unwrap();
+
+        let response = decode_response(&outgoing_rx.next().await.unwrap());
+
+        assert_eq!(response["id"], 1);
+        assert_eq!(response["result"], "ok");
+
+        std::mem::drop(incoming_tx);
+
+        let err = connection_task.await.unwrap().err().unwrap().to_string();
+
+        assert_eq!(err, "connection lost");
     }
 }

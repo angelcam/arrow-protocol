@@ -186,3 +186,46 @@ struct RawServiceProtocolOptions {
     max_payload_size: U32,
     max_unacknowledged_data: U32,
 }
+
+#[cfg(test)]
+mod tests {
+    use bytes::{BufMut, BytesMut};
+
+    use super::{ControlProtocolOptions, ServiceProtocolOptions};
+
+    use crate::v3::msg::{DecodeMessage, EncodedMessage, MessageKind};
+
+    /// Create an encoded control protocol options message.
+    fn control_options(max_payload_size: u32, max_concurrent_requests: u16) -> EncodedMessage {
+        let mut buf = BytesMut::new();
+
+        buf.put_u32(max_payload_size);
+        buf.put_u16(max_concurrent_requests);
+
+        EncodedMessage::new(MessageKind::ControlProtocolOptions, buf.freeze())
+    }
+
+    /// Create an encoded service protocol options message.
+    fn service_options(max_payload_size: u32, max_unacknowledged_data: u32) -> EncodedMessage {
+        let mut buf = BytesMut::new();
+
+        buf.put_u32(max_payload_size);
+        buf.put_u32(max_unacknowledged_data);
+
+        EncodedMessage::new(MessageKind::ServiceProtocolOptions, buf.freeze())
+    }
+
+    #[test]
+    fn test_remote_options_validation() {
+        // NOTE: Values below these limits would allow the remote peer to stall
+        //   the connection or to make the local peer send empty messages
+        //   forever.
+        assert!(ControlProtocolOptions::decode(&control_options(1023, 1)).is_err());
+        assert!(ControlProtocolOptions::decode(&control_options(1024, 0)).is_err());
+        assert!(ControlProtocolOptions::decode(&control_options(1024, 1)).is_ok());
+
+        assert!(ServiceProtocolOptions::decode(&service_options(1023, 1024)).is_err());
+        assert!(ServiceProtocolOptions::decode(&service_options(1024, 1023)).is_err());
+        assert!(ServiceProtocolOptions::decode(&service_options(1024, 1024)).is_ok());
+    }
+}

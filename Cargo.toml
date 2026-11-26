@@ -37,7 +37,7 @@ features = ["derive", "preserve-order"]
 
 [dev-dependencies.tokio]
 version = "1"
-features = ["full"]
+features = ["full", "test-util"]
 
 [dev-dependencies.tokio-util]
 version = "0.7"

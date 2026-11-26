@@ -308,3 +308,55 @@ enum ClientHelloMessage {
     Control(ControlProtocolHelloMessage),
     Service(ServiceProtocolHelloMessage),
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use bytes::Bytes;
+    use futures::{SinkExt, StreamExt};
+
+    use super::ArrowProtocolAcceptor;
+
+    use crate::v3::utils::tests::{FakeIo, create_fake_io_input, create_fake_io_output};
+
+    #[tokio::test]
+    async fn test_accept_error_message_delivered() {
+        let (mut incoming_tx, incoming_rx) = create_fake_io_input(4);
+        let (outgoing_tx, outgoing_rx) = create_fake_io_output();
+
+        let io = FakeIo::new(incoming_rx, Some(outgoing_tx));
+
+        // a raw data message instead of a hello message
+        let unexpected_msg = &[0x03, 0x20, 0x00, 0x00, 0x00, 0x01, 0x00];
+
+        incoming_tx
+            .send(Ok(Bytes::from_static(unexpected_msg)))
+            .await
+            .unwrap();
+
+        let res = ArrowProtocolAcceptor::new()
+            .with_pong_timeout(Duration::from_secs(10))
+            .accept(io)
+            .await;
+
+        assert!(res.is_err());
+
+        // NOTE: The accept method returns right away but the error message
+        //   must still be delivered to the remote peer and the transport must
+        //   be closed afterwards.
+        let sent_messages: Vec<Bytes> =
+            tokio::time::timeout(Duration::from_secs(5), outgoing_rx.collect())
+                .await
+                .expect("the transport was not closed");
+
+        assert_eq!(sent_messages.len(), 1);
+
+        assert_eq!(
+            sent_messages[0],
+            &[0x03, 0x02, 0x00, 0x00, 0x00, 0x01, 0x04][..]
+        );
+
+        std::mem::drop(incoming_tx);
+    }
+}

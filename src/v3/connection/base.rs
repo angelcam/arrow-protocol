@@ -270,7 +270,7 @@ mod tests {
 
     use bytes::{Bytes, BytesMut};
     use futures::{SinkExt, StreamExt};
-    use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
+    use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
 
     use super::{BaseConnectionBuilder, BaseConnectionError};
 
@@ -454,5 +454,39 @@ mod tests {
         std::mem::drop(tx);
 
         assert_eq!(fake_io.tx, data);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_partial_frame_after_local_close_is_eof() {
+        let (local, mut remote) = tokio::io::duplex(1024);
+
+        let mut data = BytesMut::new();
+
+        // one complete PING message followed by an incomplete one
+        data.extend_from_slice(&[0x03, 0x06, 0x00, 0x00, 0x00, 0x02, 0x00, 0x00]);
+        data.extend_from_slice(&[0x03, 0x06, 0x00, 0x00, 0x00, 0x02, 0x00]);
+
+        remote.write_all(&data).await.unwrap();
+
+        let connection = BaseConnectionBuilder::new()
+            .with_max_rx_payload_size(1024)
+            .build(local);
+
+        let (mut tx, mut rx) = connection.split();
+
+        let msg = rx.next().await.unwrap().unwrap();
+
+        assert_eq!(msg.kind(), MessageKind::Ping);
+
+        let close = tokio::spawn(async move { tx.close().await });
+
+        // the incomplete message is not an error after a local close
+        assert!(rx.next().await.is_none());
+
+        // the lingering close completes after the remote peer closes the
+        // connection
+        std::mem::drop(remote);
+
+        close.await.unwrap().unwrap();
     }
 }

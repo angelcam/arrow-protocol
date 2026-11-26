@@ -353,3 +353,94 @@ impl ServiceConnectionContext {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::task::{Context, Poll};
+
+    use bytes::Bytes;
+
+    use super::ServiceConnectionContext;
+
+    use crate::v3::{msg::raw::RawDataMessage, service::msg::ServiceConnectionMessage};
+
+    #[test]
+    fn test_remote_close_fails_pending_flush() {
+        let waker = futures::task::noop_waker();
+
+        let mut cx = Context::from_waker(&waker);
+
+        let mut context = ServiceConnectionContext::new(1024, 1024, 1024);
+
+        context
+            .start_send_outgoing(Bytes::from(vec![0u8; 2048]))
+            .unwrap();
+
+        // the first chunk exhausts the TX capacity
+        let Poll::Ready(Some(ServiceConnectionMessage::Data(msg))) = context.poll_outgoing(&mut cx)
+        else {
+            panic!("expected a data message");
+        };
+
+        assert_eq!(msg.into_data().len(), 1024);
+
+        assert!(context.poll_outgoing(&mut cx).is_pending());
+        assert!(context.poll_flush_outgoing(&mut cx).is_pending());
+
+        // the remote peer closes the connection, so the rest of the data can
+        // never be sent
+        context.close_incoming();
+
+        // NOTE: The remaining data must not be reported as flushed.
+        assert!(matches!(
+            context.poll_flush_outgoing(&mut cx),
+            Poll::Ready(Err(_))
+        ));
+
+        assert!(matches!(context.poll_outgoing(&mut cx), Poll::Ready(None)));
+
+        assert!(matches!(
+            context.poll_ready_outgoing(&mut cx),
+            Poll::Ready(Err(_))
+        ));
+    }
+
+    #[test]
+    fn test_no_ack_after_local_close() {
+        let waker = futures::task::noop_waker();
+
+        let mut cx = Context::from_waker(&waker);
+
+        let mut context = ServiceConnectionContext::new(1024, 1024, 1024);
+
+        let data = RawDataMessage::new(Bytes::from(vec![0u8; 512]));
+
+        context.process_incoming_item(Ok(data.into()));
+
+        // consuming the data would normally trigger an ACK
+        assert!(matches!(
+            context.poll_incoming(&mut cx),
+            Poll::Ready(Some(Ok(_)))
+        ));
+
+        assert!(matches!(
+            context.poll_close_outgoing(&mut cx),
+            Poll::Ready(Ok(()))
+        ));
+
+        // ... but the ACK would allow the remote peer to send more data while
+        // we're trying to close the connection
+        assert!(matches!(context.poll_outgoing(&mut cx), Poll::Ready(None)));
+
+        // data arriving after the local close can still be read
+        let data = RawDataMessage::new(Bytes::from(vec![0u8; 256]));
+
+        context.process_incoming_item(Ok(data.into()));
+
+        let Poll::Ready(Some(Ok(chunk))) = context.poll_incoming(&mut cx) else {
+            panic!("expected a data chunk");
+        };
+
+        assert_eq!(chunk.len(), 256);
+    }
+}

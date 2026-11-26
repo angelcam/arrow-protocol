@@ -348,6 +348,7 @@ mod tests {
     use crate::v3::{
         msg::{
             hello::ServiceProtocolHelloMessage,
+            options::ServiceProtocolOptions,
             raw::{RawDataAckMessage, RawDataMessage},
         },
         utils::tests::{
@@ -516,5 +517,105 @@ mod tests {
 
         assert_eq!(sent_messages[3][1], 0x20); // second data message
         assert_eq!(&sent_messages[3][2..6], &u32::to_be_bytes(512)); // second data message length
+    }
+
+    #[tokio::test]
+    async fn test_drop_closes_transport() {
+        let (mut incoming_tx, incoming_rx) = create_fake_io_input(4);
+        let (outgoing_tx, outgoing_rx) = create_fake_io_output();
+
+        let io = FakeIo::new(incoming_rx, Some(outgoing_tx));
+
+        let remote_options = ServiceProtocolOptions::new(65_536, 1024)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(remote_options)).await.unwrap();
+
+        let mut connection = ServiceProtocolConnection::builder()
+            .with_max_rx_payload_size(1024)
+            .with_rx_capacity(1024)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
+            .await
+            .unwrap();
+
+        // NOTE: Only a half of the data fits into the remote window.
+        connection.feed(Bytes::from(vec![0u8; 2048])).await.unwrap();
+
+        std::mem::drop(connection);
+
+        // the background tasks must close the transport even though there is
+        // unsent data and the remote peer is still connected
+        let sent_messages: Vec<Bytes> =
+            tokio::time::timeout(Duration::from_secs(5), outgoing_rx.collect())
+                .await
+                .expect("the transport was not closed");
+
+        assert_eq!(sent_messages[0][1], 0x01); // hello message
+        assert_eq!(sent_messages[1][1], 0x05); // local options
+
+        let sent_data = sent_messages[2..]
+            .iter()
+            .map(|msg| {
+                assert_eq!(msg[1], 0x20); // data message
+
+                msg.len() - 6
+            })
+            .sum::<usize>();
+
+        assert!(sent_data <= 1024);
+
+        std::mem::drop(incoming_tx);
+    }
+
+    #[tokio::test]
+    async fn test_remote_eof_after_data() {
+        let (mut incoming_tx, incoming_rx) = create_fake_io_input(4);
+        let (outgoing_tx, outgoing_rx) = create_fake_io_output();
+
+        let io = FakeIo::new(incoming_rx, Some(outgoing_tx));
+
+        let remote_options = ServiceProtocolOptions::new(65_536, 65_536)
+            .to_encoded_message()
+            .to_bytes();
+
+        incoming_tx.send(Ok(remote_options)).await.unwrap();
+
+        for i in 0..2 {
+            incoming_tx
+                .send(Ok(create_raw_data_message(vec![i; 512])))
+                .await
+                .unwrap();
+        }
+
+        // the remote peer closes the connection right after sending the data
+        std::mem::drop(incoming_tx);
+
+        let mut connection = ServiceProtocolConnection::builder()
+            .with_max_rx_payload_size(1024)
+            .with_rx_capacity(1024)
+            .with_ping_interval(Duration::from_secs(20))
+            .with_pong_timeout(Duration::from_secs(10))
+            .connect(io, ServiceProtocolHelloMessage::new("foo"))
+            .await
+            .unwrap();
+
+        // all data sent before the EOF must be delivered
+        for i in 0..2 {
+            let chunk = connection.next().await.unwrap().unwrap();
+
+            assert_eq!(chunk, vec![i; 512]);
+        }
+
+        assert!(connection.next().await.is_none());
+
+        // ... and the outgoing side must be closed as well
+        assert!(connection.send(Bytes::from_static(b"foo")).await.is_err());
+
+        tokio::time::timeout(Duration::from_secs(5), outgoing_rx.collect::<Vec<_>>())
+            .await
+            .expect("the transport was not closed");
     }
 }

@@ -394,3 +394,222 @@ impl ErrorExt for io::Error {
         io::Error::new(io::ErrorKind::BrokenPipe, "broken transport")
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        io,
+        pin::Pin,
+        task::{Context, Poll},
+        time::Duration,
+    };
+
+    use tokio::{
+        io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, ReadBuf},
+        time::Instant,
+    };
+
+    use super::BaseIO;
+
+    /// Duplex stream that panics if it is read again after reporting EOF.
+    struct SingleEofStream {
+        inner: DuplexStream,
+        eof: bool,
+    }
+
+    impl AsyncRead for SingleEofStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &mut ReadBuf<'_>,
+        ) -> Poll<io::Result<()>> {
+            assert!(!self.eof, "read after EOF");
+
+            let remaining_before = buf.remaining();
+
+            futures::ready!(AsyncRead::poll_read(Pin::new(&mut self.inner), cx, buf))?;
+
+            if remaining_before > 0 && buf.remaining() == remaining_before {
+                self.eof = true;
+            }
+
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    impl AsyncWrite for SingleEofStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<io::Result<usize>> {
+            AsyncWrite::poll_write(Pin::new(&mut self.inner), cx, buf)
+        }
+
+        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            AsyncWrite::poll_flush(Pin::new(&mut self.inner), cx)
+        }
+
+        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<io::Result<()>> {
+            AsyncWrite::poll_shutdown(Pin::new(&mut self.inner), cx)
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_write_timeout_breaks_reader() {
+        let write_timeout = Duration::from_secs(10);
+        let close_timeout = Duration::from_secs(10);
+
+        // NOTE: The remote end is kept alive but it never reads anything.
+        let (local, remote) = tokio::io::duplex(64);
+
+        let io = BaseIO::new(local, write_timeout, close_timeout);
+
+        let (mut rx, mut tx) = tokio::io::split(Box::pin(io));
+
+        let reader = tokio::spawn(async move {
+            let mut buf = [0u8; 16];
+
+            rx.read(&mut buf).await
+        });
+
+        let start = Instant::now();
+
+        let err = loop {
+            if let Err(err) = tx.write(&[0u8; 64]).await {
+                break err;
+            }
+        };
+
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+
+        assert!(start.elapsed() >= write_timeout);
+
+        // the pending reader must be woken up with an error, not with EOF
+        let err = reader.await.unwrap().unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+
+        // ... and the transport cannot be closed gracefully anymore
+        assert!(tx.shutdown().await.is_err());
+
+        std::mem::drop(remote);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_shutdown_lingers_until_remote_eof() {
+        let write_timeout = Duration::from_secs(10);
+        let close_timeout = Duration::from_secs(10);
+
+        let (local, mut remote) = tokio::io::duplex(1024);
+
+        let io = BaseIO::new(local, write_timeout, close_timeout);
+
+        let (mut rx, mut tx) = tokio::io::split(Box::pin(io));
+
+        let reader = tokio::spawn(async move {
+            let mut buf = [0u8; 16];
+
+            rx.read(&mut buf).await
+        });
+
+        // let the reader block on the empty transport
+        tokio::time::sleep(Duration::from_millis(1)).await;
+
+        tx.write_all(b"hello").await.unwrap();
+
+        let shutdown = tokio::spawn(async move { tx.shutdown().await });
+
+        // the pending reader gets EOF as soon as the shutdown starts
+        assert_eq!(reader.await.unwrap().unwrap(), 0);
+
+        // the remote peer receives all data followed by EOF
+        let mut received = Vec::new();
+
+        remote.read_to_end(&mut received).await.unwrap();
+
+        assert_eq!(received, b"hello");
+
+        // data sent by the remote peer after our shutdown is drained (the
+        // remote write would block forever otherwise because the data does
+        // not fit into the transport buffer)
+        remote.write_all(&[0u8; 4096]).await.unwrap();
+
+        // the shutdown must not complete until the remote peer closes the
+        // connection as well
+        tokio::time::sleep(Duration::from_secs(1)).await;
+
+        assert!(!shutdown.is_finished());
+
+        std::mem::drop(remote);
+
+        shutdown.await.unwrap().unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_close_timeout() {
+        let write_timeout = Duration::from_secs(10);
+        let close_timeout = Duration::from_secs(5);
+
+        let (local, mut remote) = tokio::io::duplex(1024);
+
+        let io = BaseIO::new(local, write_timeout, close_timeout);
+
+        let mut io = Box::pin(io);
+
+        let start = Instant::now();
+
+        // the remote peer never closes the connection
+        let err = io.shutdown().await.unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::TimedOut);
+
+        assert!(start.elapsed() >= close_timeout);
+
+        let mut buf = [0u8; 16];
+
+        // the remote peer still got our EOF
+        assert_eq!(remote.read(&mut buf).await.unwrap(), 0);
+
+        // ... but we cannot read from a transport that failed to close
+        let err = io.read(&mut buf).await.unwrap_err();
+
+        assert_eq!(err.kind(), io::ErrorKind::BrokenPipe);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_shutdown_after_remote_eof_skips_drain() {
+        let write_timeout = Duration::from_secs(10);
+        let close_timeout = Duration::from_secs(10);
+
+        let (local, mut remote) = tokio::io::duplex(1024);
+
+        let local = SingleEofStream {
+            inner: local,
+            eof: false,
+        };
+
+        let io = BaseIO::new(local, write_timeout, close_timeout);
+
+        let mut io = Box::pin(io);
+
+        remote.shutdown().await.unwrap();
+
+        let mut buf = [0u8; 16];
+
+        assert_eq!(io.read(&mut buf).await.unwrap(), 0);
+
+        // NOTE: The underlying stream panics if it is read again after EOF.
+        let start = Instant::now();
+
+        io.shutdown().await.unwrap();
+
+        assert_eq!(start.elapsed(), Duration::ZERO);
+
+        let mut received = Vec::new();
+
+        remote.read_to_end(&mut received).await.unwrap();
+
+        assert!(received.is_empty());
+    }
+}

@@ -480,6 +480,7 @@ mod tests {
 
     use bytes::{Bytes, BytesMut};
     use futures::{SinkExt, StreamExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::{Connection, ConnectionError};
 
@@ -749,5 +750,46 @@ mod tests {
         assert_eq!(outgoing, &[0x03, 0x02, 0x00, 0x00, 0x00, 0x01, 0x01][..]);
 
         std::mem::drop(incoming_tx);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn test_drop_flushes_and_lingers() {
+        // NOTE: The transport buffer is smaller than the messages sent below,
+        //   so they cannot be written before the connection is dropped.
+        let (local, mut remote) = tokio::io::duplex(64);
+
+        let (mut connection, ping_pong_handler) = Connection::builder()
+            .with_max_rx_payload_size(1024)
+            .build(local);
+
+        std::mem::drop(ping_pong_handler);
+
+        let mut expected = BytesMut::new();
+
+        for i in 0..4 {
+            let payload = [i; 32];
+
+            connection
+                .send(create_message(MessageKind::RawData, &payload))
+                .await
+                .unwrap();
+
+            expected.extend_from_slice(&[0x03, 0x20, 0x00, 0x00, 0x00, 0x20]);
+            expected.extend_from_slice(&payload);
+        }
+
+        std::mem::drop(connection);
+
+        // all messages must be delivered followed by EOF
+        let mut received = Vec::new();
+
+        remote.read_to_end(&mut received).await.unwrap();
+
+        assert_eq!(received, expected);
+
+        // the local end must keep draining incoming data until the remote
+        // peer closes the connection (writing to a closed duplex stream would
+        // fail and a blocked write would never complete)
+        remote.write_all(&[0u8; 1024]).await.unwrap();
     }
 }
