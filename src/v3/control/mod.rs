@@ -63,15 +63,23 @@ impl ControlProtocolConnectionBuilder {
     }
 
     /// Set the maximum payload size for incoming messages.
+    ///
+    /// The given size must be at least 1024 bytes.
     #[inline]
     pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
+        assert!(size >= 1024);
+
         self.max_rx_payload_size = size;
         self
     }
 
     /// Set the maximum number of concurrent incoming requests.
+    ///
+    /// The given number must be greater than zero.
     #[inline]
     pub const fn with_max_local_concurrent_requests(mut self, count: u16) -> Self {
+        assert!(count >= 1);
+
         self.max_local_concurrent_requests = count;
         self
     }
@@ -314,6 +322,7 @@ impl ControlProtocolConnection {
 
         let message_sender = OutgoingMessageSender {
             context: context.clone(),
+            abort: abort.clone(),
         };
 
         // TERMINATION: The task will be terminated when all outgoing messages
@@ -519,19 +528,28 @@ impl Stream for OutgoingMessageStream {
 /// Outgoing message sender.
 struct OutgoingMessageSender {
     context: Arc<Mutex<ConnectionContext>>,
+    abort: AbortHandle,
 }
 
 impl OutgoingMessageSender {
     /// Forward all outgoing messages.
-    async fn send_all<T, E>(self, tx: T) -> Result<(), E>
+    async fn send_all<T>(self, tx: T)
     where
-        T: Sink<ControlProtocolMessage, Error = E>,
+        T: Sink<ControlProtocolMessage, Error = Error>,
     {
         let stream = OutgoingMessageStream {
-            context: self.context,
+            context: self.context.clone(),
         };
 
-        stream.map(Ok).forward(tx).await
+        if stream.map(Ok).forward(tx).await.is_err() {
+            // NOTE: To prevent half-dead connections, we need to close the
+            //   context and abort the incoming channel in case of an error
+            //   bacuse the error itself does not guarantee that the underlying
+            //   connection was closed.
+            self.context.lock().unwrap().close(None);
+
+            self.abort.abort();
+        }
     }
 }
 
@@ -654,20 +672,20 @@ where
         &self,
         request: JsonRpcRequest,
     ) -> Result<(), ControlProtocolError> {
-        let token = self.acquire_incoming_request_token()?;
+        let request_id = request.id();
+
+        let token = self.acquire_incoming_request_token(request_id)?;
 
         let service = self.service.clone();
 
         tokio::spawn(async move {
-            let id = request.id();
-
             let (method, params) = request.deconstruct();
 
             let response = service
                 .handle_request(method, params)
                 .await
-                .map(|result| JsonRpcResponse::success(id, result))
-                .unwrap_or_else(|err| JsonRpcResponse::error(id, err));
+                .map(|result| JsonRpcResponse::success(request_id, result))
+                .unwrap_or_else(|err| JsonRpcResponse::error(request_id, err));
 
             token.resolve(response);
         });
@@ -699,13 +717,17 @@ where
     }
 
     /// Acquire a token for an incoming request.
-    fn acquire_incoming_request_token(&self) -> Result<IncomingRequestToken, ControlProtocolError> {
+    fn acquire_incoming_request_token(
+        &self,
+        request_id: u64,
+    ) -> Result<IncomingRequestToken, ControlProtocolError> {
         let mut context = self.context.lock().unwrap();
 
         context.accept_incoming_request()?;
 
         let token = IncomingRequestToken {
-            context: self.context.clone(),
+            context: Some(self.context.clone()),
+            request_id,
         };
 
         Ok(token)
@@ -718,16 +740,30 @@ where
 /// associated incoming request. It also ensures that the number of concurrent
 /// incoming requests is properly tracked.
 struct IncomingRequestToken {
-    context: Arc<Mutex<ConnectionContext>>,
+    context: Option<Arc<Mutex<ConnectionContext>>>,
+    request_id: u64,
 }
 
 impl IncomingRequestToken {
     /// Send back a given response.
-    fn resolve(self, response: JsonRpcResponse) {
+    fn resolve(mut self, response: JsonRpcResponse) {
         self.context
+            .take()
+            .unwrap()
             .lock()
             .unwrap()
             .push_outgoing_response(response);
+    }
+}
+
+impl Drop for IncomingRequestToken {
+    fn drop(&mut self) {
+        if let Some(context) = self.context.take() {
+            let error = JsonRpcError::new(-32000, "no response");
+            let response = JsonRpcResponse::error(self.request_id, error);
+
+            context.lock().unwrap().push_outgoing_response(response);
+        }
     }
 }
 

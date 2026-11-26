@@ -53,15 +53,23 @@ impl ServiceProtocolConnectionBuilder {
     }
 
     /// Set the maximum payload size for incoming messages.
+    ///
+    /// The given size must be at least 1024 bytes.
     #[inline]
     pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
+        assert!(size >= 1024);
+
         self.max_rx_payload_size = size;
         self
     }
 
     /// Set the maximum amount of unacknowledged incoming data.
+    ///
+    /// The given amount must be at least 1024 bytes.
     #[inline]
     pub const fn with_rx_capacity(mut self, size: u32) -> Self {
+        assert!(size >= 1024);
+
         self.rx_capacity = size;
         self
     }
@@ -350,8 +358,11 @@ mod tests {
     use super::{ServiceProtocolConnection, ServiceProtocolError};
 
     /// Create an encoded raw data message.
-    fn create_raw_data_message(data: &[u8]) -> Bytes {
-        RawDataMessage::new(Bytes::copy_from_slice(data))
+    fn create_raw_data_message<T>(data: T) -> Bytes
+    where
+        T: Into<Bytes>,
+    {
+        RawDataMessage::new(data.into())
             .to_encoded_message()
             .to_bytes()
     }
@@ -373,13 +384,13 @@ mod tests {
             .unwrap();
 
         incoming_tx
-            .send(Ok(create_raw_data_message(&[0x00; 32][..])))
+            .send(Ok(create_raw_data_message(vec![0u8; 1024])))
             .await
             .unwrap();
 
         let mut connection = ServiceProtocolConnection::builder()
             .with_max_rx_payload_size(1024)
-            .with_rx_capacity(32)
+            .with_rx_capacity(1024)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
             .connect(io, ServiceProtocolHelloMessage::new("foo"))
@@ -397,7 +408,7 @@ mod tests {
 
         // now exceed the capacity
         incoming_tx
-            .send(Ok(create_raw_data_message(&[0x00; 32][..])))
+            .send(Ok(create_raw_data_message(vec![0u8; 1024])))
             .await
             .unwrap();
 
@@ -409,7 +420,7 @@ mod tests {
         // ... and a part of the third chunk
         let chunk = connection.next().await.unwrap().unwrap();
 
-        assert_eq!(chunk.len(), 31);
+        assert_eq!(chunk.len(), 1023);
 
         // but we'll get an error on the next read because the third chunk
         // exceeded the capacity
@@ -436,7 +447,7 @@ mod tests {
 
         assert_eq!(
             ack_message,
-            &[0x03, 0x21, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00, 0x20][..]
+            &[0x03, 0x21, 0x00, 0x00, 0x00, 0x04, 0x00, 0x00, 0x04, 0x00][..]
         );
 
         let error_message = outgoing_rx.next().await.unwrap();
@@ -457,7 +468,7 @@ mod tests {
         let io = FakeIo::new(incoming_rx, Some(outgoing_tx));
 
         let remote_options = &[
-            0x03, 0x05, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x20,
+            0x03, 0x05, 0x00, 0x00, 0x00, 0x08, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x04, 0x00,
         ];
 
         incoming_tx
@@ -467,7 +478,7 @@ mod tests {
 
         let mut connection = ServiceProtocolConnection::builder()
             .with_max_rx_payload_size(1024)
-            .with_rx_capacity(32)
+            .with_rx_capacity(1024)
             .with_ping_interval(Duration::from_secs(20))
             .with_pong_timeout(Duration::from_secs(10))
             .connect(io, ServiceProtocolHelloMessage::new("foo"))
@@ -475,13 +486,13 @@ mod tests {
             .unwrap();
 
         tokio::spawn(async move {
-            let _ = connection.send(Bytes::from(&[0x00; 64][..])).await;
+            let _ = connection.send(Bytes::from(vec![0u8; 2048])).await;
         });
 
         // wait a bit before releasing channel capacity
         tokio::time::sleep(Duration::from_millis(100)).await;
 
-        let ack = RawDataAckMessage::new(16).to_encoded_message().to_bytes();
+        let ack = RawDataAckMessage::new(512).to_encoded_message().to_bytes();
 
         incoming_tx.send(Ok(ack)).await.unwrap();
 
@@ -501,9 +512,9 @@ mod tests {
         assert_eq!(sent_messages[1][1], 0x05); // local options
 
         assert_eq!(sent_messages[2][1], 0x20); // first data message
-        assert_eq!(&sent_messages[2][2..6], &u32::to_be_bytes(32)); // first data message length
+        assert_eq!(&sent_messages[2][2..6], &u32::to_be_bytes(1024)); // first data message length
 
         assert_eq!(sent_messages[3][1], 0x20); // second data message
-        assert_eq!(&sent_messages[3][2..6], &u32::to_be_bytes(16)); // second data message length
+        assert_eq!(&sent_messages[3][2..6], &u32::to_be_bytes(512)); // second data message length
     }
 }

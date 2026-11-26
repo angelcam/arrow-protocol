@@ -89,24 +89,36 @@ impl ArrowProtocolAcceptor {
     }
 
     /// Set the maximum payload size for incoming messages.
+    ///
+    /// The given size must be at least 1024 bytes.
     #[inline]
     pub const fn with_max_rx_payload_size(mut self, size: u32) -> Self {
+        assert!(size >= 1024);
+
         self.max_rx_payload_size = size;
         self
     }
 
     /// Set the maximum number of concurrent incoming requests (for control
     /// protocol connections).
+    ///
+    /// The given number must be greater than zero.
     #[inline]
     pub const fn with_max_local_concurrent_requests(mut self, count: u16) -> Self {
+        assert!(count >= 1);
+
         self.max_local_concurrent_requests = count;
         self
     }
 
     /// Set the maximum amount of unacknowledged incoming data (for service
     /// protocol connections).
+    ///
+    /// The given amount must be at least 1024 bytes.
     #[inline]
     pub const fn with_rx_capacity(mut self, size: u32) -> Self {
+        assert!(size >= 1024);
+
         self.rx_capacity = size;
         self
     }

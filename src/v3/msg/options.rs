@@ -19,8 +19,17 @@ pub struct ControlProtocolOptions {
 
 impl ControlProtocolOptions {
     /// Create new control protocol connection options.
+    ///
+    /// # Arguments
+    /// * `max_payload_size` - The maximum payload size in bytes. Must be at
+    ///   least 1024.
+    /// * `max_concurrent_requests` - The maximum number of concurrent
+    ///   requests. Must be at least 1.
     #[inline]
     pub const fn new(max_payload_size: u32, max_concurrent_requests: u16) -> Self {
+        assert!(max_payload_size >= 1024);
+        assert!(max_concurrent_requests >= 1);
+
         Self {
             max_payload_size,
             max_concurrent_requests,
@@ -53,7 +62,17 @@ impl DecodeMessage for ControlProtocolOptions {
             max_concurrent_requests: raw.max_concurrent_requests.get(),
         };
 
-        Ok(res)
+        if res.max_payload_size < 1024 {
+            Err(Error::from_static_msg(
+                "maximum payload size must be at least 1024 bytes",
+            ))
+        } else if res.max_concurrent_requests < 1 {
+            Err(Error::from_static_msg(
+                "maximum number of concurrent requests must be at least 1",
+            ))
+        } else {
+            Ok(res)
+        }
     }
 }
 
@@ -88,8 +107,17 @@ pub struct ServiceProtocolOptions {
 
 impl ServiceProtocolOptions {
     /// Create new service protocol connection options.
+    ///
+    /// # Arguments
+    /// * `max_payload_size` - The maximum payload size in bytes. Must be at
+    ///   least 1024.
+    /// * `max_unacknowledged_data` - The maximum amount of unacknowledged
+    ///   data in bytes. Must be at least 1024.
     #[inline]
     pub const fn new(max_payload_size: u32, max_unacknowledged_data: u32) -> Self {
+        assert!(max_payload_size >= 1024);
+        assert!(max_unacknowledged_data >= 1024);
+
         Self {
             max_payload_size,
             max_unacknowledged_data,
@@ -122,7 +150,17 @@ impl DecodeMessage for ServiceProtocolOptions {
             max_unacknowledged_data: raw.max_unacknowledged_data.get(),
         };
 
-        Ok(res)
+        if res.max_payload_size < 1024 {
+            Err(Error::from_static_msg(
+                "maximum payload size must be at least 1024 bytes",
+            ))
+        } else if res.max_unacknowledged_data < 1024 {
+            Err(Error::from_static_msg(
+                "maximum amount of unacknowledged data must be at least 1024 bytes",
+            ))
+        } else {
+            Ok(res)
+        }
     }
 }
 
